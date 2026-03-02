@@ -213,6 +213,7 @@ class MemeplexActorCritic(nn.Module):
         meme_dim: int = 16,
         n_memes: int = 8,
         comm_rounds: int = 1,
+        ablate_meme_context: bool = False,
     ):
         super().__init__()
         self.hidden_dim  = hidden_dim
@@ -242,8 +243,10 @@ class MemeplexActorCritic(nn.Module):
         self.meme_params = nn.Parameter(torch.randn(n_agents, n_memes, meme_dim) * 0.1)
 
         # Communication heads — messages include meme context
-        self.key_head   = nn.Linear(hidden_dim + meme_dim, comm_dim)
-        self.value_head = nn.Linear(hidden_dim + meme_dim, comm_dim)
+        self.ablate_meme_context = ablate_meme_context
+        comm_in = hidden_dim if ablate_meme_context else hidden_dim + meme_dim
+        self.key_head   = nn.Linear(comm_in, comm_dim)
+        self.value_head = nn.Linear(comm_in, comm_dim)
         self.query_head = nn.Linear(hidden_dim, comm_dim)
 
         # Actor uses hidden + meme + aggregated context
@@ -309,7 +312,10 @@ class MemeplexActorCritic(nn.Module):
             active_memes = active_memes.unsqueeze(0)
 
         B, N, _ = hidden.shape
-        h_meme = torch.cat([hidden, active_memes], dim=-1)  # (B, N, hidden+meme)
+        if self.ablate_meme_context:
+            h_meme = hidden
+        else:
+            h_meme = torch.cat([hidden, active_memes], dim=-1)  # (B, N, hidden+meme)
 
         keys    = self.key_head(h_meme)     # (B, N, C)
         values  = self.value_head(h_meme)   # (B, N, C)
@@ -384,6 +390,7 @@ def run_vectorized_infection(
     immunity_boost: float = 1.0,
     virality_threshold: float = 0.0,
     attn_min: float = 0.1,
+    ablate_attention: bool = False,
 ) -> int:
     """
     Vectorized infection across all agent pairs.
@@ -426,13 +433,18 @@ def run_vectorized_infection(
         # Fitness term: (N,) -> broadcast to (N, N)
         fitness_term = (sender_fitness.abs() + 0.1).unsqueeze(0).expand(N, -1)  # (N_recv, N_send)
 
-        # Virality: (N, N)
-        virality = fitness_term * novelty * attn
+        if ablate_attention:
+            # Random contagion: ignore attention entirely, base transmission equally across all peers
+            virality = fitness_term * novelty * (1.0 / max(1, N - 1))
+            mask = ~torch.eye(N, device=device, dtype=torch.bool)
+        else:
+            # Virality: (N, N)
+            virality = fitness_term * novelty * attn
 
-        # Subtract immunity (per-pair, sparse — need loop but only over active pairs)
-        # Mask: self-attention=0, low attention=0
-        mask = (attn > attn_min)
-        mask.fill_diagonal_(False)
+            # Subtract immunity (per-pair, sparse — need loop but only over active pairs)
+            # Mask: self-attention=0, low attention=0
+            mask = (attn > attn_min)
+            mask.fill_diagonal_(False)
 
         # Get candidate pairs
         recv_ids, send_ids = torch.where(mask)
@@ -553,6 +565,8 @@ class MemeplexTrainer:
         virality_threshold: float = 0.0,
         fitness_ema_alpha: float = 0.1,
         usage_ema_alpha: float = 0.05,
+        ablate_attention: bool = False,
+        ablate_meme_context: bool = False,
     ):
         self.env            = env
         self.device         = device
@@ -573,6 +587,8 @@ class MemeplexTrainer:
         self.virality_threshold  = virality_threshold
         self.fitness_ema_alpha   = fitness_ema_alpha
         self.usage_ema_alpha     = usage_ema_alpha
+        self.ablate_attention    = ablate_attention
+        self.ablate_meme_context = ablate_meme_context
 
         env_info   = env.get_env_info()
         obs_dim    = env_info["obs_shape"]
@@ -590,6 +606,7 @@ class MemeplexTrainer:
             meme_dim   = meme_dim,
             n_memes    = n_memes,
             comm_rounds= comm_rounds,
+            ablate_meme_context=ablate_meme_context,
         ).to(device)
 
         # Move meme bank device references
@@ -659,6 +676,7 @@ class MemeplexTrainer:
             mutation_sigma=self.mutation_sigma,
             immunity_boost=self.immunity_boost,
             virality_threshold=self.virality_threshold,
+            ablate_attention=self.ablate_attention,
         )
 
         self.policy.meme_bank.decay_immunity(self.immunity_decay)
@@ -880,6 +898,8 @@ def run_train(args):
         virality_threshold = args.virality_threshold,
         fitness_ema_alpha  = args.fitness_ema_alpha,
         usage_ema_alpha    = args.usage_ema_alpha,
+        ablate_attention   = args.ablate_attention,
+        ablate_meme_context = args.ablate_meme_context,
     )
 
     total_params = sum(p.numel() for p in trainer.policy.parameters() if p.requires_grad)
@@ -897,6 +917,11 @@ def run_train(args):
     update_idx = 0
 
     while steps_done < args.total_steps:
+        # Anneal mutation sigma if requested
+        if args.mutation_anneal_steps > 0:
+            frac = max(0.0, 1.0 - steps_done / args.mutation_anneal_steps)
+            trainer.mutation_sigma = args.mutation_sigma * frac
+
         ep_reward, win_rate, infections = trainer.collect_rollout(args.rollout_steps)
         metrics = trainer.update()
         steps_done += args.rollout_steps
@@ -994,6 +1019,8 @@ def run_eval(args):
         meme_dim   = args.meme_dim,
         n_memes    = args.n_memes,
         comm_rounds= args.comm_rounds,
+        ablate_attention   = args.ablate_attention,
+        ablate_meme_context = args.ablate_meme_context,
     )
     trainer.load(args.load_path)
     trainer.policy.eval()
@@ -1060,6 +1087,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Steps between infection attempts")
     p.add_argument("--mutation-sigma", type=float, default=0.1,
                    help="Std of Gaussian noise on meme transmission")
+    p.add_argument("--mutation-anneal-steps", type=int, default=0,
+                   help="Number of steps over which to linearly decay mutation sigma to 0")
     p.add_argument("--immunity-decay", type=float, default=0.99,
                    help="Per-step decay of immune memory")
     p.add_argument("--immunity-boost", type=float, default=1.0,
@@ -1070,6 +1099,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Smoothing factor for per-meme fitness tracking")
     p.add_argument("--usage-ema-alpha", type=float, default=0.05,
                    help="Smoothing factor for meme usage tracking")
+
+    # Ablations
+    p.add_argument("--ablate-attention", action="store_true",
+                   help="Random contagion: ignore attention for infection transmission")
+    p.add_argument("--ablate-meme-context", action="store_true",
+                   help="Blind comms: do not condition messages on active meme")
 
     # PPO hyperparams
     p.add_argument("--lr",              type=float, default=5e-4)
