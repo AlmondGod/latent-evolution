@@ -54,6 +54,7 @@ class MemeticFoundationTrainer:
         n_mem_cells: int = 8,
         use_memory: bool = True,
         use_comm: bool = True,
+        use_gate: bool = True,
         mem_decay: float = 0.005,
     ):
         self.env = env
@@ -76,6 +77,7 @@ class MemeticFoundationTrainer:
             n_mem_cells=n_mem_cells,
             use_memory=use_memory,
             use_comm=use_comm,
+            use_gate=use_gate,
             mem_decay=mem_decay,
         ).to(self.device)
 
@@ -318,7 +320,7 @@ class MemeticFoundationTrainer:
         mini_batch_size = max(batch_size // self.num_mini_batches, 1)
 
         metrics = {"loss": 0, "pi_loss": 0, "v_loss": 0, "entropy": 0, "aux_loss": 0}
-        avg_norms = {"memory": 0.0, "memory_delta": 0.0, "message_out": 0.0, "message_in": 0.0}
+        avg_norms = {"memory": 0.0, "memory_delta": 0.0, "message_out": 0.0, "message_in": 0.0, "gate_open_frac": 0.0}
         total_pg, total_vf, total_ent, total_aux, n_updates = 0.0, 0.0, 0.0, 0.0, 0
 
         self.policy.train()
@@ -370,6 +372,7 @@ class MemeticFoundationTrainer:
             "memory_delta_norm": avg_norms["memory_delta"] / max(n_updates, 1),
             "message_out_norm": avg_norms["message_out"] / max(n_updates, 1),
             "message_in_norm": avg_norms["message_in"] / max(n_updates, 1),
+            "gate_open_frac": avg_norms["gate_open_frac"] / max(n_updates, 1),
         }
 
     def save(self, path: str) -> None:

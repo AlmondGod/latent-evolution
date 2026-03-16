@@ -75,6 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Disable persistent memory (comm-only or baseline)")
     parser.add_argument("--no-comm", action="store_true",
                         help="Disable communication (memory-only or baseline)")
+    parser.add_argument("--no-gate", action="store_true",
+                        help="Disable IC3Net comm gate (always-on communication)")
 
     # Interventions for ablation verification
     parser.add_argument("--intervene-memory-reset", action="store_true",
@@ -207,6 +209,7 @@ def run_train(args):
         n_mem_cells=args.n_mem_cells,
         use_memory=not args.no_memory,
         use_comm=not args.no_comm,
+        use_gate=not args.no_gate,
         mem_decay=args.mem_decay,
     )
 
@@ -367,6 +370,7 @@ def run_eval(args):
         n_mem_cells=args.n_mem_cells,
         use_memory=not args.no_memory,
         use_comm=not args.no_comm,
+        use_gate=not args.no_gate,
         mem_decay=args.mem_decay,
     )
     trainer.load(args.load_path)
