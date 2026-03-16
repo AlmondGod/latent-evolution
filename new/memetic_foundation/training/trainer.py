@@ -82,6 +82,7 @@ class MemeticFoundationTrainer:
         ).to(self.device)
 
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr, eps=1e-5)
+        self.lr_init = lr
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.clip_coef = clip_coef
@@ -288,6 +289,17 @@ class MemeticFoundationTrainer:
             stats["collisions"] = float(np.mean(episode_collisions))
             
         return stats
+
+    def anneal_lr(self, fraction: float) -> None:
+        """Linearly anneal LR: fraction=1.0 → lr_init, fraction=0.0 → lr_min.
+
+        Call before each update: trainer.anneal_lr(1 - step/total_steps)
+        This ensures full LR early in training, decaying toward lr_init/10
+        at the end. Prevents large policy updates destabilizing learned policies.
+        """
+        lr = max(self.lr_init * fraction, self.lr_init * 0.1)
+        for g in self.optimizer.param_groups:
+            g["lr"] = lr
 
     def update(self, buffer: RolloutBuffer, last_values: np.ndarray) -> dict:
         """Run PPO update on collected rollout."""

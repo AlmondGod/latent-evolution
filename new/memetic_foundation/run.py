@@ -234,6 +234,10 @@ def run_train(args):
     pbar = tqdm(total=args.total_steps, desc=f"MF-{variant}")
 
     for iteration in range(n_iters):
+        # Linear LR annealing: full LR at start, 10% LR at end
+        fraction = 1.0 - (iteration / max(n_iters, 1))
+        trainer.anneal_lr(fraction)
+
         buffer, last_values, stats = trainer.collect_rollout(args.rollout_steps)
         update_stats = trainer.update(buffer, last_values)
         buffer.clear()

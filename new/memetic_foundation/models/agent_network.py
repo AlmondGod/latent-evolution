@@ -419,7 +419,9 @@ class MemeticFoundationAC(nn.Module):
 
             aux_loss = aux_loss + 0.001 * m_bar_aux.pow(2).mean()
             # Gate entropy: encourage decisive gating (p near 0 or 1, not 0.5)
-            aux_loss = aux_loss + 0.01 * gate_ent
+            # Coefficient 0.05 provides ~5× stronger signal than policy gradient
+            # at initialization (H≈0.55), ensuring gate learns selectivity.
+            aux_loss = aux_loss + 0.05 * gate_ent
             norms_dict["message_in"] = m_bar_aux.norm().item()
             norms_dict["message_out"] = norms_dict["message_in"]
 
