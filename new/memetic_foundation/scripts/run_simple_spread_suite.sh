@@ -10,7 +10,7 @@ ENV="mpe"
 SCENARIO="simple_spread_v2"
 TOTAL_STEPS=200000
 
-SAVE_DIR="checkpoints/mpe_spread_ablations"
+SAVE_DIR="checkpoints/mpe_spread_gru"
 mkdir -p "$SAVE_DIR"
 
 echo "=================================================="

@@ -1,110 +1,129 @@
 """
-memory_cells.py — Persistent per-agent memory bank.
+memory_cells.py — GRU-based persistent per-agent memory.
 
-Each agent maintains K memory cells of dimension mem_dim.
-Memory contents are runtime STATE (register_buffer), not trainable weights.
-A learned initial template (nn.Parameter) is copied into state at creation.
+Each agent maintains a single GRU hidden state h of dimension mem_dim.
+The GRU unifies read and write: its hidden state IS the memory, and
+the GRU update IS the write operation.
+
+For the full variant, GRU input is [u; m̄_prev] — observation encoding
+concatenated with the previous timestep's received communication.
+Communication at time t only affects h at time t+1.
+
+For memory_only, GRU input is just u (observation encoding).
+
 Memory persists across episodes by default, detached between rollouts.
+Optional decay gently pulls h toward zero for self-stabilization.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import torch
 import torch.nn as nn
 
 
-class PersistentMemory(nn.Module):
-    """Persistent per-agent memory bank.
+class GRUMemory(nn.Module):
+    """GRU-based persistent per-agent memory.
 
     Parameters (learned via gradient descent):
-        mem_init: (K, mem_dim) — learned initial template for memory cells
+        gru_cell: nn.GRUCell — the recurrent update mechanism
+        h_init: (mem_dim,) — learned initial hidden state template
 
     State (runtime, not optimized directly):
-        memory_state: (n_agents, K, mem_dim) — actual evolving memory contents
+        hidden_state: (n_agents, mem_dim) — actual evolving memory
 
-    The memory_state is registered as a buffer so it moves with .to(device)
+    The hidden_state is registered as a buffer so it moves with .to(device)
     and is included in state_dict, but is NOT a trainable parameter.
-
-    Memory decay: at each update, cells are gently pulled toward zero:
-        m_ik <- (1 - decay) * m_ik + write_update
-    This is self-stabilizing: strongly-written cells persist while
-    unmaintained cells naturally fade, preventing unbounded accumulation.
     """
 
     def __init__(
         self,
         n_agents: int,
-        n_cells: int = 8,
+        input_dim: int,
         mem_dim: int = 128,
         mem_decay: float = 0.005,
     ):
         super().__init__()
         self.n_agents = n_agents
-        self.n_cells = n_cells
+        self.input_dim = input_dim
         self.mem_dim = mem_dim
         self.mem_decay = mem_decay
 
-        # Learned initial template — provides structured starting memory
-        self.mem_init = nn.Parameter(torch.empty(n_cells, mem_dim))
-        nn.init.orthogonal_(self.mem_init)
+        # GRU cell — the learned recurrent update
+        self.gru_cell = nn.GRUCell(input_dim, mem_dim)
 
-        # Runtime memory state — actual evolving per-agent memory
-        # Initialized by copying mem_init into each agent slot
+        # Learned initial hidden state template
+        self.h_init = nn.Parameter(torch.zeros(mem_dim))
+
+        # Runtime hidden state — actual evolving per-agent memory
         self.register_buffer(
-            "memory_state",
-            self.mem_init.data.unsqueeze(0).expand(n_agents, -1, -1).clone(),
+            "hidden_state",
+            self.h_init.data.unsqueeze(0).expand(n_agents, -1).clone(),
         )
 
+        self._init_weights()
+
+    def _init_weights(self):
+        """Orthogonal init on GRU weights for stable training."""
+        nn.init.orthogonal_(self.gru_cell.weight_ih)
+        nn.init.orthogonal_(self.gru_cell.weight_hh)
+        nn.init.zeros_(self.gru_cell.bias_ih)
+        nn.init.zeros_(self.gru_cell.bias_hh)
+
+    def step(self, x: torch.Tensor) -> torch.Tensor:
+        """Run one GRU step and update hidden state.
+
+        Args:
+            x: (N, input_dim) — GRU input (e.g. [u; m̄_prev] or just u)
+
+        Returns:
+            h_new: (N, mem_dim) — updated hidden state
+        """
+        h_new = self.gru_cell(x, self.hidden_state)
+
+        # Apply decay: h <- (1 - λ) * h
+        if self.mem_decay > 0:
+            h_new = h_new * (1.0 - self.mem_decay)
+
+        # Update buffer in-place (preserves registered buffer)
+        self.hidden_state.data.copy_(h_new.data)
+
+        return h_new
+
     def reset_state(self) -> None:
-        """Re-copy from learned mem_init into runtime state.
+        """Re-copy from learned h_init into runtime state.
 
         Use at: eval starts, new environments, ablation-controlled resets.
         """
         with torch.no_grad():
-            self.memory_state.copy_(
-                self.mem_init.data.unsqueeze(0).expand(self.n_agents, -1, -1)
+            self.hidden_state.copy_(
+                self.h_init.data.unsqueeze(0).expand(self.n_agents, -1)
             )
 
     def detach_state(self) -> None:
-        """Detach memory state from computation graph.
+        """Detach hidden state from computation graph.
 
         Call at rollout boundaries to truncate gradient flow
         while preserving memory values.
         """
-        self.memory_state.detach_()
+        self.hidden_state.detach_()
 
     def get_state(self) -> torch.Tensor:
-        """Return a detached clone of current memory state."""
-        return self.memory_state.detach().clone()
+        """Return a detached clone of current hidden state."""
+        return self.hidden_state.detach().clone()
 
     def set_state(self, state: torch.Tensor) -> None:
-        """Restore memory state from a saved tensor."""
+        """Restore hidden state from a saved tensor."""
         with torch.no_grad():
-            self.memory_state.copy_(state)
-
-    def update(self, new_state: torch.Tensor) -> None:
-        """Replace memory state with new values (from write step),
-        then apply decay to gently pull cells toward zero.
-
-        Uses in-place copy to preserve the registered buffer.
-
-        Args:
-            new_state: (n_agents, K, mem_dim) — output of MemoryWriter
-        """
-        self.memory_state.data.copy_(new_state.data)
-        # Apply decay: m <- (1 - λ) * m
-        if self.mem_decay > 0:
-            self.memory_state.data.mul_(1.0 - self.mem_decay)
+            self.hidden_state.copy_(state)
 
     def forward(self) -> torch.Tensor:
-        """Return current memory state: (n_agents, K, mem_dim)."""
-        return self.memory_state
+        """Return current hidden state: (n_agents, mem_dim)."""
+        return self.hidden_state
 
     def extra_repr(self) -> str:
         return (
-            f"n_agents={self.n_agents}, n_cells={self.n_cells}, "
-            f"mem_dim={self.mem_dim}"
+            f"n_agents={self.n_agents}, input_dim={self.input_dim}, "
+            f"mem_dim={self.mem_dim}, mem_decay={self.mem_decay}"
         )

@@ -208,7 +208,8 @@ class MemeticFoundationTrainer:
         mem_state = self.policy.get_memory_state()
         if mem_state is not None:
             stats["mem_norm"] = float(mem_state.norm().item())
-            stats["mem_cell_norms"] = mem_state.norm(dim=-1).mean().item()
+            # Per-agent hidden state norms
+            stats["mem_agent_norms"] = mem_state.norm(dim=-1).mean().item()
 
         return buffer, last_values, stats
 

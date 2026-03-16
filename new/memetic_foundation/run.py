@@ -65,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Memory cell dimension")
     parser.add_argument("--comm-dim", type=int, default=128,
                         help="Communication message dimension")
-    parser.add_argument("--n-mem-cells", type=int, default=8,
+    parser.add_argument("--n-mem-cells", type=int, default=8,  # legacy, unused with GRU
                         help="Number of persistent memory cells per agent")
     parser.add_argument("--mem-decay", type=float, default=0.005,
                         help="Memory decay rate (0=no decay, 0.005=gentle, 0.01=moderate)")
