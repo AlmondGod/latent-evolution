@@ -1,0 +1,57 @@
+========================================================================
+MEMETIC FOUNDATION: COMPREHENSIVE RESULTS REPORT
+All rewards = deterministic eval (5 test episodes) at final step
+========================================================================
+
+── FULL OBSERVABILITY (N=3, 200k steps, 8 seeds) ──────────────
+  baseline                      : final=  1383±1507   peak=  2139  median=  733  (n=8)
+  memory_only                   : final=   876±842    peak=  1162  median=  670  (n=8)
+  comm_only                     : final=  1102±1292   peak=  1534  median=  251  (n=8)
+  full                          : final=   584±967    peak=   849  median=   62  (n=8)
+  Key: comm variants consistently weaker. Memory ~= baseline.
+
+── GATED IC3Net COMM (N=3, 200k steps, 8 seeds) ──────────────
+  comm_only_gated               : final=    62±82     peak=   328  median=   34  (n=8)
+  full_gated                    : final=   358±514    peak=   636  median=   68  (n=8)
+  Note: gate always-open (entropy reg not yet applied here).
+
+── 1M CONVERGENCE (N=3, full obs) ────────────────────────────
+  baseline                      : final=    25±26     peak=  1638  median=    8  (n=3)
+  memory_only                   : final=    39±13     peak=  1765  median=   38  (n=3)
+  comm_only                     : final=    12±16     peak=  1176  median=    2  (n=3)
+  full                          : final=    25±6      peak=   562  median=   26  (n=3)
+  Comm variants DIVERGE at 1M steps (instability confirmed).
+
+── N-AGENT SCALING (full obs, 200k, 4 seeds each) ────────────
+  N=3:
+      baseline                  : final=   274±346    peak=  1410  median=  121  (n=4)
+      memory_only               : final=   625±646    peak=   896  median=  412  (n=4)
+      full_gated                : final=   371±462    peak=   509  median=  164  (n=4)
+  N=5:
+      baseline                  : final=   989±850    peak=  1678  median=  811  (n=4)
+      memory_only               : final=   830±627    peak=  1846  median=  723  (n=4)
+      full_gated                : final=   211±326    peak=   267  median=   28  (n=4)
+  N=8:
+      baseline                  : final=   415±642    peak=   614  median=   59  (n=4)
+      memory_only               : final=    34±12     peak=   462  median=   35  (n=4)
+
+── PARTIAL OBSERVABILITY (N=3, obs_radius=0.5, 200k, 8 seeds) ─
+  baseline                      : final=  1186±1028   peak=  2390  median= 1212  (n=8)
+  memory_only                   : final=   341±356    peak=  1038  median=  206  (n=8)  Δ vs baseline: -845
+  full_gated                    : final=   324±477    peak=   521  median=   78  (n=8)  Δ vs baseline: -862
+
+  FINDING: Memory_only WORSE than baseline at 200k under partial obs.
+  But memory shows PEAK rewards of 2460 (vs baseline peak ~3484).
+  Instability diagnosis: GRU collapses after reaching good policy.
+  Hypothesis: partial obs needs MORE STEPS (400k-1M) for stable conv.
+
+────────────────────────────────────────────────────────────────────────
+EXPERIMENTAL STATUS:
+  N=8 scaling (full obs): n=4 seeds done
+  Partial obs full_gated (8 seeds): n=8 seeds done
+
+NEXT EXPERIMENT QUEUED:
+  run_partial_obs_nscale.sh — does memory advantage scale with N
+  under partial obs? (key test of scalable memetics hypothesis)
+  Recommended: 400k steps for stable convergence.
+========================================================================

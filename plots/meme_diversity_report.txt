@@ -1,0 +1,39 @@
+
+====================================================================
+MEME DIVERSITY ANALYSIS
+Comparing agent memory state diversity under full vs partial obs
+====================================================================
+
+────────────────────────────────────────────────────────────────────
+                         Full Observability                         
+  n = 8 seeds
+
+  Cosine sim (↓ = more diverse)             : 0.593 ± 0.209
+  Effective mem dimensions (↑ = richer)     : 11.531 ± 4.487
+  Memory norm (↑ = more active)             : 1.398 ± 0.528
+  Memory update rate (↑ = more dynamic)     : 0.176 ± 0.023
+  Inter-agent std (↑ = more specialized)    : 0.012 ± 0.007
+  Mean episode reward                       : 189.875 ± 129.206
+
+────────────────────────────────────────────────────────────────────
+                        Partial Obs (r=0.5)                         
+  n = 8 seeds
+
+  Cosine sim (↓ = more diverse)             : 0.663 ± 0.105
+  Effective mem dimensions (↑ = richer)     : 9.477 ± 5.015
+  Memory norm (↑ = more active)             : 1.125 ± 0.521
+  Memory update rate (↑ = more dynamic)     : 0.135 ± 0.033
+  Inter-agent std (↑ = more specialized)    : 0.009 ± 0.005
+  Mean episode reward                       : 122.875 ± 70.247
+
+────────────────────────────────────────────────────────────────────
+HYPOTHESIS TEST: Partial obs → more diverse memes?
+
+  Cosine sim (↓ = more diverse)           : full=0.593  partial=0.663  Δ=+12%  ↑
+  Effective mem dimensions (↑ = richer)   : full=11.531  partial=9.477  Δ=-18%  ↓
+  Memory norm (↑ = more active)           : full=1.398  partial=1.125  Δ=-20%  ↓
+  Memory update rate (↑ = more dynamic)   : full=0.176  partial=0.135  Δ=-23%  ↓
+
+  ✗ UNEXPECTED: Partial obs agents have LESS DIVERSE memory states
+    Cosine sim: full=0.593 → partial=0.663 (Δ=+0.070)
+====================================================================

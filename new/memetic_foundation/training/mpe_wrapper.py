@@ -13,6 +13,11 @@ class MPEWrapper:
             memory states (they see different subsets of the world), which is
             necessary for meaningful memetic differentiation.
             Set obs_radius=None (default) for full observability.
+
+    Curriculum training support:
+        Call set_obs_radius(r) during training to gradually tighten the
+        observability constraint: start with None (full obs), anneal to
+        the target obs_radius over the first N training steps.
     """
     def __init__(self, scenario_name="simple_tag_v2", num_good=1, num_adversaries=3,
                  num_obstacles=2, max_cycles=100, obs_radius=None, **kwargs):
@@ -65,6 +70,17 @@ class MPEWrapper:
             
         # Will be populated on reset
         self.last_obs = None
+
+    def set_obs_radius(self, radius):
+        """Dynamically update obs_radius for curriculum training.
+
+        Call during training to gradually decrease obs_radius:
+            step 0:       set_obs_radius(None)   — full observability
+            step 100k:    set_obs_radius(0.5)    — target partial obs
+
+        This gives agents time to learn basic coverage before restricting vision.
+        """
+        self.obs_radius = radius
     
     def get_env_info(self):
         # We need to initialize the environment spaces

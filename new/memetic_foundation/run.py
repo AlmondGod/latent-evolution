@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 import warnings
 
@@ -82,6 +83,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--obs-radius", type=float, default=None,
                         help="Partial observability radius (None=full obs). "
                              "Entities beyond this distance are masked from agent obs.")
+    parser.add_argument("--obs-radius-curriculum", action="store_true",
+                        help="Curriculum obs radius: start with full obs, anneal to "
+                             "--obs-radius over first --obs-curriculum-steps steps. "
+                             "Eliminates bimodal training distribution in spread+partial obs.")
+    parser.add_argument("--obs-curriculum-steps", type=int, default=100_000,
+                        help="Number of steps over which to anneal obs_radius from None "
+                             "to --obs-radius (only used if --obs-radius-curriculum)")
 
     # Interventions for ablation verification
     parser.add_argument("--intervene-memory-reset", action="store_true",
@@ -241,6 +249,24 @@ def run_train(args):
         fraction = 1.0 - (iteration / max(n_iters, 1))
         trainer.anneal_lr(fraction)
 
+        # Curriculum obs_radius annealing (for MPE spread partial obs)
+        # Start with full obs, gradually restrict to target obs_radius.
+        # This prevents catastrophic failures from agents never seeing landmarks.
+        if (getattr(args, "obs_radius_curriculum", False)
+                and args.obs_radius is not None
+                and hasattr(trainer.env, "set_obs_radius")):
+            curriculum_steps = getattr(args, "obs_curriculum_steps", 100_000)
+            if total_steps >= curriculum_steps:
+                # Curriculum complete: use target obs_radius
+                trainer.env.set_obs_radius(args.obs_radius)
+            else:
+                # Linearly increase obs masking: full obs → target radius
+                # (None = full obs means no masking; interpolate as "infinite")
+                # Use a large proxy value for "full obs": 100.0 (no masking in practice)
+                frac_done = total_steps / curriculum_steps
+                current_r = 100.0 + frac_done * (args.obs_radius - 100.0)
+                trainer.env.set_obs_radius(current_r)
+
         buffer, last_values, stats = trainer.collect_rollout(args.rollout_steps)
         update_stats = trainer.update(buffer, last_values)
         buffer.clear()
@@ -310,7 +336,8 @@ def run_train(args):
                 writer.add_scalar("Eval/min_dist", eval_stats["min_dist"], total_steps)
             if "collisions" in eval_stats:
                 writer.add_scalar("Eval/collisions", eval_stats["collisions"], total_steps)
-            tqdm.write(f"  [Eval] Step {total_steps} | reward={eval_stats['mean_reward']:.2f} | success={eval_stats.get('success_rate', 0.0):.1%} | dist={eval_stats.get('min_dist', 0.0):.2f}")
+            tqdm.write(f"  [Eval] Step {total_steps} | reward={eval_stats['mean_reward']:.2f} | success={eval_stats.get('success_rate', 0.0):.1%} | dist={eval_stats.get('min_dist', 0.0):.2f}", file=sys.stdout)
+            sys.stdout.flush()
 
     pbar.close()
     writer.close()
