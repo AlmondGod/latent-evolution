@@ -27,6 +27,11 @@ class PersistentMemory(nn.Module):
 
     The memory_state is registered as a buffer so it moves with .to(device)
     and is included in state_dict, but is NOT a trainable parameter.
+
+    Memory decay: at each update, cells are gently pulled toward zero:
+        m_ik <- (1 - decay) * m_ik + write_update
+    This is self-stabilizing: strongly-written cells persist while
+    unmaintained cells naturally fade, preventing unbounded accumulation.
     """
 
     def __init__(
@@ -34,11 +39,13 @@ class PersistentMemory(nn.Module):
         n_agents: int,
         n_cells: int = 8,
         mem_dim: int = 128,
+        mem_decay: float = 0.005,
     ):
         super().__init__()
         self.n_agents = n_agents
         self.n_cells = n_cells
         self.mem_dim = mem_dim
+        self.mem_decay = mem_decay
 
         # Learned initial template — provides structured starting memory
         self.mem_init = nn.Parameter(torch.empty(n_cells, mem_dim))
@@ -79,7 +86,8 @@ class PersistentMemory(nn.Module):
             self.memory_state.copy_(state)
 
     def update(self, new_state: torch.Tensor) -> None:
-        """Replace memory state with new values (from write step).
+        """Replace memory state with new values (from write step),
+        then apply decay to gently pull cells toward zero.
 
         Uses in-place copy to preserve the registered buffer.
 
@@ -87,6 +95,9 @@ class PersistentMemory(nn.Module):
             new_state: (n_agents, K, mem_dim) — output of MemoryWriter
         """
         self.memory_state.data.copy_(new_state.data)
+        # Apply decay: m <- (1 - λ) * m
+        if self.mem_decay > 0:
+            self.memory_state.data.mul_(1.0 - self.mem_decay)
 
     def forward(self) -> torch.Tensor:
         """Return current memory state: (n_agents, K, mem_dim)."""

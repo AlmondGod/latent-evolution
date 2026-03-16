@@ -1,0 +1,42 @@
+==================================================
+Memory Decay Sweep
+==================================================
+Decay values: 0.0 0.001 0.005 0.01 0.05
+Variants: memory_only full
+Seeds: 42 123 456 789
+Total runs: 40
+--------------------------------------------------
+
+>>> decay=0.0 variant=memory_only
+  Done: decay=0.0 variant=memory_only
+
+>>> decay=0.0 variant=full
+  Done: decay=0.0 variant=full
+
+>>> decay=0.001 variant=memory_only
+  Done: decay=0.001 variant=memory_only
+
+>>> decay=0.001 variant=full
+  Done: decay=0.001 variant=full
+
+>>> decay=0.005 variant=memory_only
+  Done: decay=0.005 variant=memory_only
+
+>>> decay=0.005 variant=full
+  Done: decay=0.005 variant=full
+
+>>> decay=0.01 variant=memory_only
+  Done: decay=0.01 variant=memory_only
+
+>>> decay=0.01 variant=full
+  Done: decay=0.01 variant=full
+
+>>> decay=0.05 variant=memory_only
+  Done: decay=0.05 variant=memory_only
+
+>>> decay=0.05 variant=full
+  Done: decay=0.05 variant=full
+
+==================================================
+Decay Sweep Complete!
+==================================================

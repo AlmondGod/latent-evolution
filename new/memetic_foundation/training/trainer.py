@@ -54,6 +54,7 @@ class MemeticFoundationTrainer:
         n_mem_cells: int = 8,
         use_memory: bool = True,
         use_comm: bool = True,
+        mem_decay: float = 0.005,
     ):
         self.env = env
         self.device = torch.device(device)
@@ -75,6 +76,7 @@ class MemeticFoundationTrainer:
             n_mem_cells=n_mem_cells,
             use_memory=use_memory,
             use_comm=use_comm,
+            mem_decay=mem_decay,
         ).to(self.device)
 
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr, eps=1e-5)
@@ -109,6 +111,9 @@ class MemeticFoundationTrainer:
         """
         buffer = RolloutBuffer()
         episode_rewards = []
+        episode_successes = []
+        episode_min_dists = []
+        episode_collisions = []
         win_count = 0
         episode_count = 0
 
@@ -164,6 +169,12 @@ class MemeticFoundationTrainer:
                 episode_rewards.append(self._episode_reward)
                 if info.get("battle_won", False):
                     win_count += 1
+                if "success" in info:
+                    episode_successes.append(float(info["success"]))
+                if "min_dist" in info:
+                    episode_min_dists.append(info["min_dist"])
+                if "collisions" in info:
+                    episode_collisions.append(info["collisions"])
                 episode_count += 1
                 self._episode_reward = 0.0
                 self.env.reset()
@@ -184,6 +195,14 @@ class MemeticFoundationTrainer:
             "win_rate": win_count / max(episode_count, 1),
             "episodes": episode_count,
         }
+        
+        # MPE Custom Metrics
+        if episode_successes:
+            stats["success_rate"] = float(np.mean(episode_successes))
+        if episode_min_dists:
+            stats["min_dist"] = float(np.mean(episode_min_dists))
+        if episode_collisions:
+            stats["collisions"] = float(np.mean(episode_collisions))
 
         # Memory diagnostics
         mem_state = self.policy.get_memory_state()
@@ -192,6 +211,80 @@ class MemeticFoundationTrainer:
             stats["mem_cell_norms"] = mem_state.norm(dim=-1).mean().item()
 
         return buffer, last_values, stats
+
+    def evaluate(self, test_episodes: int = 5, deterministic: bool = True) -> dict:
+        """Run evaluation episodes without updating the model, returning aggregate stats."""
+        self.policy.eval()
+        episode_rewards = []
+        episode_successes = []
+        episode_min_dists = []
+        episode_collisions = []
+        win_count = 0
+        
+        # Save memory state before eval
+        saved_memory = self.policy.get_memory_state()
+        
+        for _ in range(test_episodes):
+            self.env.reset()
+            self.policy.reset_memory()
+            episode_reward = 0.0
+            done = False
+            
+            while not done:
+                obs = self.env.get_obs()
+                avail = [self.env.get_avail_agent_actions(i) for i in range(self.n_agents)]
+                
+                with torch.no_grad():
+                    obs_t = torch.tensor(np.array(obs, dtype=np.float32), device=self.device)
+                    avail_t = torch.tensor(np.array(avail, dtype=np.float32), device=self.device)
+                    
+                    step_out = self.policy.forward_step(obs_t, avail_t, deterministic=deterministic)
+                
+                actions = step_out["actions"].cpu().numpy()
+                reward, terminated, info = self.env.step(actions.tolist())
+                # Handle MPE info arrays occasionally returned
+                if isinstance(info, list) and len(info) > 0:
+                    info = info[0]
+                    
+                episode_reward += reward
+                
+                # Check termination
+                if isinstance(terminated, list) or isinstance(terminated, dict):
+                    if isinstance(terminated, dict):
+                        done = any(terminated.values())
+                    else:
+                        done = any(terminated)
+                else:
+                    done = terminated
+                
+                if done:
+                    episode_rewards.append(episode_reward)
+                    if info.get("battle_won", False):
+                        win_count += 1
+                    if "success" in info:
+                        episode_successes.append(float(info["success"]))
+                    if "min_dist" in info:
+                        episode_min_dists.append(info["min_dist"])
+                    if "collisions" in info:
+                        episode_collisions.append(info["collisions"])
+
+        # Restore memory state
+        if saved_memory is not None:
+            self.policy.set_memory_state(saved_memory)
+            
+        stats = {
+            "mean_reward": float(np.mean(episode_rewards)) if episode_rewards else 0.0,
+            "win_rate": win_count / max(test_episodes, 1),
+        }
+        
+        if episode_successes:
+            stats["success_rate"] = float(np.mean(episode_successes))
+        if episode_min_dists:
+            stats["min_dist"] = float(np.mean(episode_min_dists))
+        if episode_collisions:
+            stats["collisions"] = float(np.mean(episode_collisions))
+            
+        return stats
 
     def update(self, buffer: RolloutBuffer, last_values: np.ndarray) -> dict:
         """Run PPO update on collected rollout."""
@@ -223,18 +316,25 @@ class MemeticFoundationTrainer:
         batch_size = obs_t.shape[0]
         mini_batch_size = max(batch_size // self.num_mini_batches, 1)
 
+        metrics = {"loss": 0, "pi_loss": 0, "v_loss": 0, "entropy": 0, "aux_loss": 0}
+        avg_norms = {"memory": 0.0, "memory_delta": 0.0, "message_out": 0.0, "message_in": 0.0}
         total_pg, total_vf, total_ent, total_aux, n_updates = 0.0, 0.0, 0.0, 0.0, 0
 
         self.policy.train()
+        total_updates = 0
         for _ in range(self.update_epochs):
             indices = np.random.permutation(batch_size)
             for start in range(0, batch_size, mini_batch_size):
                 end = min(start + mini_batch_size, batch_size)
                 idx = indices[start:end]
 
-                new_lp, entropy, values, aux_loss = self.policy.evaluate_actions(
+                new_lp, entropy, values, aux_loss, norms_dict = self.policy.evaluate_actions(
                     obs_t[idx], states_t[idx], actions_t[idx], avail_t[idx]
                 )
+                
+                # Accumulate norms for logging
+                for k in avg_norms.keys():
+                    avg_norms[k] += norms_dict[k]
 
                 ratio = torch.exp(new_lp - old_lp_t[idx])
                 surr1 = ratio * adv_t[idx]
@@ -265,6 +365,10 @@ class MemeticFoundationTrainer:
             "vf_loss": total_vf / max(n_updates, 1),
             "entropy": total_ent / max(n_updates, 1),
             "aux_loss": total_aux / max(n_updates, 1),
+            "memory_norm": avg_norms["memory"] / max(n_updates, 1),
+            "memory_delta_norm": avg_norms["memory_delta"] / max(n_updates, 1),
+            "message_out_norm": avg_norms["message_out"] / max(n_updates, 1),
+            "message_in_norm": avg_norms["message_in"] / max(n_updates, 1),
         }
 
     def save(self, path: str) -> None:

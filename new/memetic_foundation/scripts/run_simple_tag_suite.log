@@ -1,0 +1,33 @@
+==================================================
+Simple Tag Ablation Suite (with mem_decay=0.005)
+==================================================
+Total Runs: 32 (4 variants * 8 seeds)
+Steps per Run: 200000
+--------------------------------------------------
+
+>>> Variant: baseline
+  Batch 1 (seeds 1-4) launched...
+  Batch 2 (seeds 5-8) launched...
+  Done: baseline
+--------------------------------------------------
+
+>>> Variant: memory_only
+  Batch 1 (seeds 1-4) launched...
+  Batch 2 (seeds 5-8) launched...
+  Done: memory_only
+--------------------------------------------------
+
+>>> Variant: comm_only
+  Batch 1 (seeds 1-4) launched...
+  Batch 2 (seeds 5-8) launched...
+  Done: comm_only
+--------------------------------------------------
+
+>>> Variant: full
+  Batch 1 (seeds 1-4) launched...
+  Batch 2 (seeds 5-8) launched...
+  Done: full
+--------------------------------------------------
+==================================================
+All 32 Simple Tag Ablation Runs Complete!
+==================================================

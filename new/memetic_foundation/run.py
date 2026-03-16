@@ -37,7 +37,9 @@ import torch
 from tqdm import tqdm
 
 from .training.env_utils import make_env
+from .training.mpe_wrapper import MPEWrapper
 from .training.trainer import MemeticFoundationTrainer, plot_training_curves
+from torch.utils.tensorboard import SummaryWriter
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -50,6 +52,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["train", "eval", "test"], default="train")
 
     # Environment
+    parser.add_argument("--env", choices=["smacv2", "mpe"], default="smacv2")
+    parser.add_argument("--mpe-scenario", type=str, default="simple_tag_v2",
+                        help="MPE scenario to load if --env is mpe")
     parser.add_argument("--race", choices=["terran", "protoss", "zerg"], default="terran")
     parser.add_argument("--n-units", type=int, default=5)
     parser.add_argument("--n-enemies", type=int, default=5)
@@ -62,12 +67,22 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Communication message dimension")
     parser.add_argument("--n-mem-cells", type=int, default=8,
                         help="Number of persistent memory cells per agent")
+    parser.add_argument("--mem-decay", type=float, default=0.005,
+                        help="Memory decay rate (0=no decay, 0.005=gentle, 0.01=moderate)")
 
     # Ablation flags
     parser.add_argument("--no-memory", action="store_true",
                         help="Disable persistent memory (comm-only or baseline)")
     parser.add_argument("--no-comm", action="store_true",
                         help="Disable communication (memory-only or baseline)")
+
+    # Interventions for ablation verification
+    parser.add_argument("--intervene-memory-reset", action="store_true",
+                        help="Zeros out memory every 10 steps during eval")
+    parser.add_argument("--intervene-comm-silence", action="store_true",
+                        help="Zeroes out targeted messages during eval")
+    parser.add_argument("--intervene-write-block", action="store_true",
+                        help="Allows comm computation but blocks it from writing to memory")
 
     # Training hyperparameters
     parser.add_argument("--total-steps", type=int, default=2_000_000)
@@ -115,12 +130,28 @@ def get_variant_name(args) -> str:
     else:
         return "baseline"
 
+def create_env(args, render=False):
+    """Helper to create either SMACv2 or MPE environment based on args."""
+    if args.env == "mpe":
+        if args.mpe_scenario in ["simple_tag_v2", "simple_spread_v2"]:
+            # Default MPE kwargs can be extended here
+            return MPEWrapper(
+                scenario_name=args.mpe_scenario,
+                num_good=1, 
+                num_adversaries=3, 
+                num_obstacles=2, 
+                max_cycles=args.rollout_steps if hasattr(args, 'rollout_steps') else 100
+            )
+        else:
+            raise NotImplementedError(f"MPE scenario {args.mpe_scenario} not supported yet.")
+    else:
+        return make_env(args.race, args.n_units, args.n_enemies, render=render)
+
 
 def run_test(args):
     """Quick smoke test with random agents."""
     print(f"=== Smoke Test: {args.race} {args.n_units}v{args.n_enemies} ===")
-    env = make_env(args.race, args.n_units, args.n_enemies,
-                   render=getattr(args, 'render', False))
+    env = create_env(args, render=getattr(args, 'render', False))
     env_info = env.get_env_info()
     print(f"  n_agents:    {env_info['n_agents']}")
     print(f"  n_actions:   {env_info['n_actions']}")
@@ -157,7 +188,7 @@ def run_train(args):
     device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
     print(f"  Device: {device}")
 
-    env = make_env(args.race, args.n_units, args.n_enemies, render=False)
+    env = create_env(args, render=False)
     trainer = MemeticFoundationTrainer(
         env=env,
         device=device,
@@ -176,6 +207,7 @@ def run_train(args):
         n_mem_cells=args.n_mem_cells,
         use_memory=not args.no_memory,
         use_comm=not args.no_comm,
+        mem_decay=args.mem_decay,
     )
 
     if args.load_path and os.path.exists(args.load_path):
@@ -185,6 +217,7 @@ def run_train(args):
     log_steps, log_rewards, log_win_rates = [], [], []
     log_pg_losses, log_vf_losses, log_entropies = [], [], []
     t_start = time.time()
+    writer = SummaryWriter(args.save_dir)
 
     n_iters = args.total_steps // args.rollout_steps
     pbar = tqdm(total=args.total_steps, desc=f"MF-{variant}")
@@ -204,6 +237,24 @@ def run_train(args):
             log_pg_losses.append(update_stats["pg_loss"])
             log_vf_losses.append(update_stats["vf_loss"])
             log_entropies.append(update_stats["entropy"])
+
+            writer.add_scalar("Reward/mean_reward", stats["mean_reward"], total_steps)
+            writer.add_scalar("Reward/win_rate", stats["win_rate"], total_steps)
+            writer.add_scalar("Loss/pg_loss", update_stats["pg_loss"], total_steps)
+            writer.add_scalar("Loss/vf_loss", update_stats["vf_loss"], total_steps)
+            writer.add_scalar("Loss/entropy", update_stats["entropy"], total_steps)
+            writer.add_scalar("Norms/memory_norm", update_stats.get("memory_norm", 0.0), total_steps)
+            writer.add_scalar("Norms/memory_delta_norm", update_stats.get("memory_delta_norm", 0.0), total_steps)
+            writer.add_scalar("Norms/message_out_norm", update_stats.get("message_out_norm", 0.0), total_steps)
+            writer.add_scalar("Norms/message_in_norm", update_stats.get("message_in_norm", 0.0), total_steps)
+            
+            # Log MPE Training Metrics if available
+            if "success_rate" in stats:
+                writer.add_scalar("Metrics/success_rate", stats["success_rate"], total_steps)
+            if "min_dist" in stats:
+                writer.add_scalar("Metrics/min_dist", stats["min_dist"], total_steps)
+            if "collisions" in stats:
+                writer.add_scalar("Metrics/collisions", stats["collisions"], total_steps)
 
         if (iteration + 1) % args.log_interval == 0 and stats["episodes"] > 0:
             elapsed = time.time() - t_start
@@ -230,8 +281,21 @@ def run_train(args):
                 args.save_dir, f"memfound_{variant}_step_{total_steps}.pt"
             )
             trainer.save(ckpt)
+            
+        # Run Deterministic Evaluation periodically (every 5 log_intervals)
+        if (iteration + 1) % (args.log_interval * 5) == 0:
+            eval_stats = trainer.evaluate(test_episodes=5, deterministic=True)
+            writer.add_scalar("Eval/mean_reward", eval_stats["mean_reward"], total_steps)
+            if "success_rate" in eval_stats:
+                writer.add_scalar("Eval/success_rate", eval_stats["success_rate"], total_steps)
+            if "min_dist" in eval_stats:
+                writer.add_scalar("Eval/min_dist", eval_stats["min_dist"], total_steps)
+            if "collisions" in eval_stats:
+                writer.add_scalar("Eval/collisions", eval_stats["collisions"], total_steps)
+            tqdm.write(f"  [Eval] Step {total_steps} | reward={eval_stats['mean_reward']:.2f} | success={eval_stats.get('success_rate', 0.0):.1%} | dist={eval_stats.get('min_dist', 0.0):.2f}")
 
     pbar.close()
+    writer.close()
     elapsed = time.time() - t_start
 
     # Save final checkpoint
@@ -248,12 +312,14 @@ def run_train(args):
         )
 
     # Save results JSON
+    scenario_str = args.mpe_scenario if args.env == "mpe" else f"{args.n_units}v{args.n_enemies}"
     results = {
         "algorithm": f"memetic_foundation_{variant}",
+        "environment": args.env,
         "total_steps": total_steps,
         "wall_clock_seconds": elapsed,
         "race": args.race,
-        "scenario": f"{args.n_units}v{args.n_enemies}",
+        "scenario": scenario_str,
         "variant": variant,
         "use_memory": not args.no_memory,
         "use_comm": not args.no_comm,
@@ -291,7 +357,7 @@ def run_eval(args):
     render = getattr(args, 'render', False)
 
     device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
-    env = make_env(args.race, args.n_units, args.n_enemies, render=render)
+    env = create_env(args, render=render)
     trainer = MemeticFoundationTrainer(
         env=env,
         device=device,
@@ -301,6 +367,7 @@ def run_eval(args):
         n_mem_cells=args.n_mem_cells,
         use_memory=not args.no_memory,
         use_comm=not args.no_comm,
+        mem_decay=args.mem_decay,
     )
     trainer.load(args.load_path)
     trainer.policy.eval()
@@ -316,8 +383,12 @@ def run_eval(args):
         env.reset()
         terminated = False
         ep_reward = 0.0
+        step_idx = 0
 
         while not terminated:
+            if args.intervene_memory_reset and step_idx > 0 and step_idx % 10 == 0:
+                trainer.policy.reset_memory()
+
             obs_list = env.get_obs()
             obs_arr = np.array(obs_list, dtype=np.float32)
             avail_arr = np.zeros(
@@ -332,12 +403,18 @@ def run_eval(args):
                 obs_t = torch.tensor(obs_arr, device=trainer.device)
                 avail_t = torch.tensor(avail_arr, device=trainer.device)
 
-                step_out = trainer.policy.forward_step(obs_t, avail_t)
+                step_out = trainer.policy.forward_step(
+                    obs_t, 
+                    avail_t, 
+                    intervene_comm_silence=args.intervene_comm_silence,
+                    intervene_write_block=args.intervene_write_block
+                )
                 # Use greedy actions for eval
                 actions = step_out["logits"].argmax(dim=-1).cpu().numpy()
 
             reward, terminated, info = env.step(actions.tolist())
             ep_reward += reward
+            step_idx += 1
 
         won = info.get("battle_won", False)
         total_reward += ep_reward

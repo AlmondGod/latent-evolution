@@ -1,0 +1,21 @@
+==================================================
+Memory Decay Ablation Suite (mem_only + full)
+==================================================
+Total Runs: 16 (2 variants * 8 seeds)
+Steps per Run: 200000
+--------------------------------------------------
+
+>>> Variant: memory_only
+  Batch 1 (seeds 1-4) launched...
+  Batch 2 (seeds 5-8) launched...
+  Done: memory_only
+--------------------------------------------------
+
+>>> Variant: full
+  Batch 1 (seeds 1-4) launched...
+  Batch 2 (seeds 5-8) launched...
+  Done: full
+--------------------------------------------------
+==================================================
+All 16 Memory Decay Runs Complete!
+==================================================
