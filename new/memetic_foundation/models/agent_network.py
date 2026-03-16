@@ -276,10 +276,10 @@ class MemeticFoundationAC(nn.Module):
         comm_attn = None
         if self.use_comm and self.comm is not None:
             if h is not None:
-                m_bar, comm_attn = self.comm(u, h)
+                m_bar, comm_attn, _ = self.comm(u, h)
             else:
                 z_proj = self.comm_z_proj(u)
-                m_bar, comm_attn = self.comm(u, z_proj)
+                m_bar, comm_attn, _ = self.comm(u, z_proj)
 
             if intervene_comm_silence:
                 m_bar = torch.zeros_like(m_bar)
@@ -367,7 +367,7 @@ class MemeticFoundationAC(nn.Module):
         elif self.use_comm and self.comm is not None:
             # comm_only: run comm on first N agents, tile
             z_proj = self.comm_z_proj(u[:N])
-            m_bar, _ = self.comm(u[:N], z_proj)
+            m_bar, _, _ = self.comm(u[:N], z_proj)
             if B_total != N:
                 n_repeats = (B_total + N - 1) // N
                 m_bar_expanded = m_bar.repeat(n_repeats, 1)[:B_total]
@@ -412,20 +412,22 @@ class MemeticFoundationAC(nn.Module):
             u_group = u[:N]
             if self.use_memory and self.memory is not None:
                 h_group = self.memory()
-                m_bar_aux, _ = self.comm(u_group, h_group)
+                m_bar_aux, _, gate_ent = self.comm(u_group, h_group)
             else:
                 z_proj = self.comm_z_proj(u_group)
-                m_bar_aux, _ = self.comm(u_group, z_proj)
+                m_bar_aux, _, gate_ent = self.comm(u_group, z_proj)
 
             aux_loss = aux_loss + 0.001 * m_bar_aux.pow(2).mean()
+            # Gate entropy: encourage decisive gating (p near 0 or 1, not 0.5)
+            aux_loss = aux_loss + 0.01 * gate_ent
             norms_dict["message_in"] = m_bar_aux.norm().item()
             norms_dict["message_out"] = norms_dict["message_in"]
 
             # Track gate open fraction
             if self.use_gate and self.comm.gate is not None:
                 z_gate = self.memory().detach() if (self.use_memory and self.memory) else self.comm_z_proj(u_group).detach()
-                gate_vals = self.comm.gate(z_gate)
-                norms_dict["gate_open_frac"] = gate_vals.mean().item()
+                gate_hard, _ = self.comm.gate(z_gate)  # returns (gate, gate_soft)
+                norms_dict["gate_open_frac"] = gate_hard.mean().item()
 
         return log_probs, entropy, values, aux_loss, norms_dict
 

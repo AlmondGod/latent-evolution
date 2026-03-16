@@ -39,27 +39,33 @@ class CommGate(nn.Module):
     Training: straight-through estimator — forward pass uses hard threshold,
     backward pass flows gradients through the sigmoid (allows gate to learn).
     Inference: hard threshold (gate is exactly 0 or 1).
+
+    Also returns soft gate values for entropy regularization:
+        gate_entropy = -p*log(p) - (1-p)*log(1-p)  where p = sigmoid(logit)
+    Adding a small gate_entropy_coef * gate_entropy loss encourages the gate
+    to be decisive (p near 0 or 1) rather than always open (p ≈ 0.73 from bias).
     """
 
     def __init__(self, input_dim: int):
         super().__init__()
         self.gate_fc = nn.Linear(input_dim, 1)
         nn.init.orthogonal_(self.gate_fc.weight, gain=0.1)
-        nn.init.constant_(self.gate_fc.bias, 1.0)  # biased open so comm is active early
+        nn.init.constant_(self.gate_fc.bias, 1.0)  # biased open early
 
-    def forward(self, z: torch.Tensor) -> torch.Tensor:
+    def forward(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             z: (N, input_dim) — per-agent state (memory h or obs encoding u)
         Returns:
-            gate: (N, 1) — binary gate, straight-through during training
+            gate:       (N, 1) — binary gate, straight-through during training
+            gate_soft:  (N, 1) — soft sigmoid values (for entropy regularization)
         """
-        logits = self.gate_fc(z)          # (N, 1)
-        soft   = torch.sigmoid(logits)    # (N, 1) — carries gradients
-        hard   = (soft > 0.5).float()     # (N, 1) — hard forward value
+        logits     = self.gate_fc(z)          # (N, 1)
+        soft       = torch.sigmoid(logits)    # (N, 1) — carries gradients
+        hard       = (soft > 0.5).float()     # (N, 1) — hard forward value
         # Straight-through: forward=hard, backward flows through soft
-        gate   = hard - soft.detach() + soft
-        return gate                       # (N, 1)
+        gate       = hard - soft.detach() + soft
+        return gate, soft                     # (N,1), (N,1)
 
 
 class TargetedComm(nn.Module):
@@ -110,15 +116,16 @@ class TargetedComm(nn.Module):
         self,
         u: torch.Tensor,
         z: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             u: (N, hidden_dim) — observation encodings
             z: (N, mem_dim)    — memory summaries (or projected obs)
 
         Returns:
-            m_bar:     (N, comm_dim) — aggregated incoming messages per agent
-            comm_attn: (N, N)        — attention weights (post-gate)
+            m_bar:        (N, comm_dim) — aggregated incoming messages per agent
+            comm_attn:    (N, N)        — attention weights (post-gate)
+            gate_entropy: scalar        — gate entropy for regularization (0 if no gate)
         """
         N = u.shape[0]
         s = torch.cat([u, z], dim=-1)  # (N, hidden_dim + mem_dim)
@@ -128,10 +135,15 @@ class TargetedComm(nn.Module):
         values = self.value_head(s)  # (N, comm_dim)
 
         # Apply gate: zero out keys/values of silent agents
+        gate_entropy = torch.tensor(0.0, device=u.device)
         if self.use_gate and self.gate is not None:
-            gate = self.gate(z)      # (N, 1) straight-through binary
-            keys   = keys   * gate   # silent agents contribute nothing
+            gate, gate_soft = self.gate(z)      # (N,1) hard, (N,1) soft
+            keys   = keys   * gate              # silent agents contribute nothing
             values = values * gate
+            # Entropy: H(p) = -p log p - (1-p) log(1-p)
+            eps = 1e-6
+            p = gate_soft.clamp(eps, 1 - eps)
+            gate_entropy = (-p * p.log() - (1 - p) * (1 - p).log()).mean()
 
         # Receiver side
         queries = self.query_head(s)  # (N, comm_dim)
@@ -149,4 +161,4 @@ class TargetedComm(nn.Module):
         # Aggregate incoming messages
         m_bar = torch.mm(comm_attn, values)  # (N, comm_dim)
 
-        return m_bar, comm_attn
+        return m_bar, comm_attn, gate_entropy
