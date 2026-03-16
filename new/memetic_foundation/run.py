@@ -77,6 +77,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Disable communication (memory-only or baseline)")
     parser.add_argument("--no-gate", action="store_true",
                         help="Disable IC3Net comm gate (always-on communication)")
+    parser.add_argument("--n-adversaries", type=int, default=3,
+                        help="Number of predator agents for simple_tag (default: 3)")
+    parser.add_argument("--obs-radius", type=float, default=None,
+                        help="Partial observability radius (None=full obs). "
+                             "Entities beyond this distance are masked from agent obs.")
 
     # Interventions for ablation verification
     parser.add_argument("--intervene-memory-reset", action="store_true",
@@ -137,12 +142,15 @@ def create_env(args, render=False):
     if args.env == "mpe":
         if args.mpe_scenario in ["simple_tag_v2", "simple_spread_v2"]:
             # Default MPE kwargs can be extended here
+            n_adv = getattr(args, 'n_adversaries', 3)
+            obs_radius = getattr(args, 'obs_radius', None)
             return MPEWrapper(
                 scenario_name=args.mpe_scenario,
-                num_good=1, 
-                num_adversaries=3, 
-                num_obstacles=2, 
-                max_cycles=args.rollout_steps if hasattr(args, 'rollout_steps') else 100
+                num_good=1,
+                num_adversaries=n_adv,
+                num_obstacles=2,
+                max_cycles=args.rollout_steps if hasattr(args, 'rollout_steps') else 100,
+                obs_radius=obs_radius,
             )
         else:
             raise NotImplementedError(f"MPE scenario {args.mpe_scenario} not supported yet.")

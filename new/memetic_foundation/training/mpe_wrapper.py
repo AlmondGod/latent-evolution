@@ -4,10 +4,21 @@ from pettingzoo.mpe import simple_tag_v2
 from pettingzoo.mpe import simple_spread_v2
 
 class MPEWrapper:
-    """Wraps PettingZoo MPE scenarios to match StarCraftCapabilityEnvWrapper API."""
-    def __init__(self, scenario_name="simple_tag_v2", num_good=1, num_adversaries=3, num_obstacles=2, max_cycles=100, **kwargs):
+    """Wraps PettingZoo MPE scenarios to match StarCraftCapabilityEnvWrapper API.
+
+    Optional partial observability:
+        obs_radius (float): if set, agent observations of other agents/prey
+            are masked to zero when those entities are further than obs_radius
+            world units away. This forces agents to hold genuinely different
+            memory states (they see different subsets of the world), which is
+            necessary for meaningful memetic differentiation.
+            Set obs_radius=None (default) for full observability.
+    """
+    def __init__(self, scenario_name="simple_tag_v2", num_good=1, num_adversaries=3,
+                 num_obstacles=2, max_cycles=100, obs_radius=None, **kwargs):
         self.scenario_name = scenario_name
         self.max_cycles = max_cycles
+        self.obs_radius = obs_radius  # None = full obs; float = partial obs radius
         
         if self.scenario_name == "simple_tag_v2":
             # For 1M parameter logic
@@ -188,8 +199,45 @@ class MPEWrapper:
 
         return team_reward, terminated, info
 
+    def _apply_obs_radius(self, obs_list):
+        """Mask out entities beyond obs_radius from each agent's observation.
+
+        In simple_tag, the adversary observation format is:
+          [self_vel(2), self_pos(2), obstacle_rel_pos(num_obs*2),
+           other_adv_rel_pos((N-1)*2), prey_rel_pos(2), prey_vel(2)]
+
+        We zero out other adversaries and prey positions when their distance
+        (inferred from rel_pos) exceeds obs_radius.
+        """
+        if self.obs_radius is None:
+            return obs_list
+
+        masked = []
+        for i, obs in enumerate(obs_list):
+            obs = obs.copy()
+            if self.scenario_name == "simple_tag_v2":
+                # Layout: vel(2) pos(2) obs_rel(num_obs*2) other_adv_rel((N-1)*2) prey_rel(2) prey_vel(2)
+                n_obs = self.num_landmarks  # obstacles
+                N = self.num_agents         # adversaries
+                adv_start = 4 + n_obs * 2
+                # Mask other adversaries
+                for j in range(N - 1):
+                    idx = adv_start + j * 2
+                    rel = obs[idx:idx+2]
+                    dist = float(np.linalg.norm(rel))
+                    if dist > self.obs_radius:
+                        obs[idx:idx+2] = 0.0
+                # Mask prey
+                prey_start = adv_start + (N - 1) * 2
+                prey_rel = obs[prey_start:prey_start+2]
+                if float(np.linalg.norm(prey_rel)) > self.obs_radius:
+                    obs[prey_start:prey_start+4] = 0.0  # zero rel_pos + vel
+            masked.append(obs)
+        return masked
+
     def get_obs(self):
-        return [np.array(self.last_obs[agent], dtype=np.float32) for agent in self.agents]
+        raw = [np.array(self.last_obs[agent], dtype=np.float32) for agent in self.agents]
+        return self._apply_obs_radius(raw)
 
     def get_state(self):
         try:
