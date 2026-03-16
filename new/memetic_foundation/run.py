@@ -144,13 +144,16 @@ def create_env(args, render=False):
             # Default MPE kwargs can be extended here
             n_adv = getattr(args, 'n_adversaries', 3)
             obs_radius = getattr(args, 'obs_radius', None)
+            # For simple_spread, n_adversaries maps to N (number of agents = landmarks)
+            is_spread = "spread" in args.mpe_scenario
             return MPEWrapper(
                 scenario_name=args.mpe_scenario,
                 num_good=1,
-                num_adversaries=n_adv,
+                num_adversaries=n_adv,  # ignored by spread; uses N= kwarg below
                 num_obstacles=2,
                 max_cycles=args.rollout_steps if hasattr(args, 'rollout_steps') else 100,
                 obs_radius=obs_radius,
+                N=n_adv if is_spread else 3,  # spread uses N= parameter
             )
         else:
             raise NotImplementedError(f"MPE scenario {args.mpe_scenario} not supported yet.")

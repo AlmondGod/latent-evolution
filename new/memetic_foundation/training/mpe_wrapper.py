@@ -232,6 +232,29 @@ class MPEWrapper:
                 prey_rel = obs[prey_start:prey_start+2]
                 if float(np.linalg.norm(prey_rel)) > self.obs_radius:
                     obs[prey_start:prey_start+4] = 0.0  # zero rel_pos + vel
+
+            elif self.scenario_name in ("simple_spread_v2", "simple_spread"):
+                # Layout: vel(2) pos(2) landmark_rel(N*2) other_agent_rel((N-1)*2) [comm]
+                # Partial obs: mask landmarks and other agents beyond obs_radius.
+                # This forces each agent to focus on nearby landmarks → role specialization.
+                N = self.num_agents
+                n_landmarks = self.num_landmarks  # == N for spread
+                landmark_start = 4  # after vel(2) + pos(2)
+                # Mask landmarks
+                for l in range(n_landmarks):
+                    idx = landmark_start + l * 2
+                    rel = obs[idx:idx+2]
+                    dist = float(np.linalg.norm(rel))
+                    if dist > self.obs_radius:
+                        obs[idx:idx+2] = 0.0
+                # Mask other agents
+                agent_start = landmark_start + n_landmarks * 2
+                for j in range(N - 1):
+                    idx = agent_start + j * 2
+                    rel = obs[idx:idx+2]
+                    dist = float(np.linalg.norm(rel))
+                    if dist > self.obs_radius:
+                        obs[idx:idx+2] = 0.0
             masked.append(obs)
         return masked
 
