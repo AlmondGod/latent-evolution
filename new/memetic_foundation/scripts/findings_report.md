@@ -172,6 +172,47 @@ for seeds that don't catastrophically fail. The combination of memory+curriculum
 
 ---
 
+---
+
+### Finding 9: Memory Converts Permanent Catastrophes to Transient Ones (N=8)
+
+**Critical N=8 result** (2026-03-16): Memory_only N=8 seed2 trajectory:
+```
+Step 20k:  dist=78.13  ← CATASTROPHIC (same as baseline)
+Step 80k:  dist=0.91   ← RECOVERED! (baseline never recovers)
+Step 100k: dist=14.32  ← partial drift
+Step 120k: dist=0.48   ← RECOVERED again
+Step 180k: dist=0.40   ← STABLE recovery achieved
+Step 220k: dist=0.42   ← persistent stability
+```
+
+For comparison, baseline_n8_seed2:
+```
+Step 40k:  dist=78.34  ← PERMANENT (stays at ~78 for all 400k steps)
+Step 400k: dist=78.15  ← never recovers
+```
+
+**Key mechanism**: The GRU hidden state provides a RESTORING FORCE.
+- When an agent is displaced far from its landmark (obs=0), the GRU h still encodes
+  the accumulated landmark fingerprint from earlier steps.
+- Under zero input, GRU state decays: h_t → 0. But the POLICY conditioned on
+  decaying-but-nonzero h can still maintain directional bias toward previously observed space.
+- With random exploration under this directional bias, agents eventually find landmarks again.
+- Baseline has no such restoring force: π(a|obs=0) is uniform, agents random-walk indefinitely.
+
+**Distinction**:
+- baseline: catastrophic states are ABSORBING (once entered, never escaped)
+- memory_only: catastrophic states are TRANSIENT (can escape due to GRU homing)
+
+**Coverage at 220k steps (memory_only N=8 seeds 1-3)**:
+- seed1: dist=0.42 ✓
+- seed2: dist=0.42 ✓ (fully recovered from catastrophe!)
+- seed3: dist=0.54 ✓
+
+All 3 seeds converging well, including the one that had a catastrophic start.
+
+---
+
 ## Current Experiments (as of 2026-03-16 update, 06:00)
 
 ### Completed:

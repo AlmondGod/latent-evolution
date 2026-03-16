@@ -56,6 +56,7 @@ class MemeticFoundationTrainer:
         use_comm: bool = True,
         use_gate: bool = True,
         mem_decay: float = 0.005,
+        comm_mode: str = "ic3net",
     ):
         self.env = env
         self.device = torch.device(device)
@@ -79,6 +80,7 @@ class MemeticFoundationTrainer:
             use_comm=use_comm,
             use_gate=use_gate,
             mem_decay=mem_decay,
+            comm_mode=comm_mode,
         ).to(self.device)
 
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr, eps=1e-5)

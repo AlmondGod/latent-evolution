@@ -1,0 +1,32 @@
+{
+  "baseline": {
+    "intra_episode_consistency": 0.9814444444444445,
+    "inter_episode_consistency": 0.9333333333333332,
+    "coverage_diversity": 0.40000000000000013,
+    "mean_lock_onset_steps": 1.1444444444444444,
+    "fraction_agents_locked": 1.0,
+    "n_episodes": 30,
+    "n_agents": 3,
+    "n_landmarks": 3
+  },
+  "memory_only": {
+    "intra_episode_consistency": 0.954,
+    "inter_episode_consistency": 0.9,
+    "coverage_diversity": 0.4222222222222223,
+    "mean_lock_onset_steps": 2.1,
+    "fraction_agents_locked": 1.0,
+    "n_episodes": 30,
+    "n_agents": 3,
+    "n_landmarks": 3
+  },
+  "full_gated": {
+    "intra_episode_consistency": 0.9994444444444445,
+    "inter_episode_consistency": 0.8777777777777778,
+    "coverage_diversity": 0.42222222222222233,
+    "mean_lock_onset_steps": 0.05555555555555555,
+    "fraction_agents_locked": 1.0,
+    "n_episodes": 30,
+    "n_agents": 3,
+    "n_landmarks": 3
+  }
+}

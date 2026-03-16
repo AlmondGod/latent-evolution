@@ -78,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Disable communication (memory-only or baseline)")
     parser.add_argument("--no-gate", action="store_true",
                         help="Disable IC3Net comm gate (always-on communication)")
+    parser.add_argument("--comm-mode", type=str, default="ic3net",
+                        choices=["ic3net", "attention_integrated", "attention_separated"],
+                        help="Communication architecture: "
+                             "'ic3net' (binary gate, m_bar_prev→GRU, default), "
+                             "'attention_integrated' (soft attention, m_bar_prev→GRU, no gate entropy), "
+                             "'attention_separated' (soft attention, GRU sees only obs, actor gets [u;h;c])")
     parser.add_argument("--n-adversaries", type=int, default=3,
                         help="Number of predator agents for simple_tag (default: 3)")
     parser.add_argument("--obs-radius", type=float, default=None,
@@ -230,6 +236,7 @@ def run_train(args):
         use_comm=not args.no_comm,
         use_gate=not args.no_gate,
         mem_decay=args.mem_decay,
+        comm_mode=args.comm_mode,
     )
 
     if args.load_path and os.path.exists(args.load_path):
@@ -414,6 +421,7 @@ def run_eval(args):
         use_comm=not args.no_comm,
         use_gate=not args.no_gate,
         mem_decay=args.mem_decay,
+        comm_mode=args.comm_mode,
     )
     trainer.load(args.load_path)
     trainer.policy.eval()
