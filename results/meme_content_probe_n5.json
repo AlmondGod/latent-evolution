@@ -1,0 +1,35 @@
+{
+  "full_gated_n5": {
+    "message_probe": {
+      "accuracy": 0.8855999999999999,
+      "chance_level": 0.2,
+      "above_chance_ratio": 4.427999999999999,
+      "n_samples": 15000,
+      "n_classes": 5
+    },
+    "hidden_probe": {
+      "accuracy": 0.9114666666666666,
+      "chance_level": 0.2,
+      "above_chance_ratio": 4.557333333333333,
+      "n_samples": 15000,
+      "n_classes": 5
+    },
+    "agent_specialization": {
+      "accuracy": 0.8631333333333334,
+      "chance_level": 0.2,
+      "above_chance_ratio": 4.315666666666667,
+      "n_samples": 15000,
+      "n_classes": 5
+    },
+    "behavior_alignment": {
+      "mean_kl_divergence": 0.010455013066530228,
+      "per_agent_kl": [
+        0.010657314211130142,
+        0.013548310846090317,
+        0.009711815975606441,
+        0.009231958538293839,
+        0.0091256657615304
+      ]
+    }
+  }
+}
