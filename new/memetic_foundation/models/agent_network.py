@@ -91,6 +91,7 @@ class MemeticFoundationAC(nn.Module):
         mem_decay: float = 0.005,
         comm_mode: str = "commnet",
         param_eq: bool = False,  # disabled: all variants use hidden_dim, no widening
+        persistent_memory: bool = False,  # if True, reset_memory() is a no-op
     ):
         super().__init__()
         self.obs_dim = obs_dim
@@ -104,20 +105,24 @@ class MemeticFoundationAC(nn.Module):
         self.use_comm = use_comm
         self.use_gate = use_gate and (comm_mode == "ic3net")
         self.comm_mode = comm_mode
+        self.persistent_memory = persistent_memory
 
         # Classify mode
         _concat_comm = use_comm and use_memory and comm_mode in ("ic3net", "attention_integrated")
         _additive_comm = use_comm and use_memory and comm_mode == "commnet"
         _sep_comm = use_comm and use_memory and comm_mode in ("attention_separated", "commnet_sep")
+        # comm_only commnet: additive comm based on neighbors' encoded obs (no GRU)
+        _additive_comm_ff = use_comm and not use_memory and comm_mode == "commnet"
 
         # --- Encoder dim: fixed at hidden_dim unless param_eq enabled ---
         if param_eq:
             ablated_params = self._estimate_ablated_params(
                 hidden_dim, mem_dim, comm_dim, n_agents, use_memory, use_comm,
+                comm_mode=comm_mode,
             )
             expanded_hidden = self._compute_expanded_hidden(
                 obs_dim, n_actions, hidden_dim, mem_dim, comm_dim, ablated_params,
-                use_memory, use_comm,
+                use_memory, use_comm, comm_mode=comm_mode,
             )
             enc_dim = expanded_hidden if ablated_params > 0 else hidden_dim
         else:
@@ -147,11 +152,17 @@ class MemeticFoundationAC(nn.Module):
         self.comm_z_proj = None
         self.comm_mean_proj = None
 
-        if _additive_comm or _sep_comm:
+        if _additive_comm or _sep_comm or _additive_comm_ff:
             # commnet / commnet_sep: mean of neighbors' h → linear proj → additive or actor
-            # Zero-init so at step 0 comm contributes nothing (starts as memory_only)
-            proj_out = enc_dim if _additive_comm else mem_dim
-            self.comm_mean_proj = nn.Linear(mem_dim, proj_out)
+            # comm_only commnet: mean of neighbors' u → linear proj → additive (no GRU)
+            # Zero-init so at step 0 comm contributes nothing (starts as memory_only/baseline)
+            if _additive_comm:
+                proj_in, proj_out = mem_dim, enc_dim   # h → u space
+            elif _sep_comm:
+                proj_in, proj_out = mem_dim, mem_dim   # h → h space
+            else:  # _additive_comm_ff
+                proj_in, proj_out = enc_dim, enc_dim   # u → u space
+            self.comm_mean_proj = nn.Linear(proj_in, proj_out)
             nn.init.zeros_(self.comm_mean_proj.weight)
             nn.init.zeros_(self.comm_mean_proj.bias)
         elif use_comm:
@@ -171,6 +182,8 @@ class MemeticFoundationAC(nn.Module):
                 actor_in = enc_dim + mem_dim          # [u; h] — integrated
         elif use_memory:
             actor_in = enc_dim + mem_dim
+        elif use_comm and comm_mode == "commnet":
+            actor_in = enc_dim                        # u + proj(mean_u_others) — additive, stays enc_dim
         elif use_comm:
             actor_in = enc_dim + comm_dim
         else:
@@ -196,48 +209,54 @@ class MemeticFoundationAC(nn.Module):
 
     def _estimate_ablated_params(
         self, hidden_dim, mem_dim, comm_dim, n_agents, use_memory, use_comm,
+        comm_mode: str = "commnet",
     ) -> int:
-        """Estimate parameters lost by ablation relative to full model."""
+        """Estimate parameters lost by ablation relative to full model.
+
+        Reference model is commnet (mem + additive comm). Lost params are
+        estimated relative to that architecture so that param_eq widens
+        ablated variants to match commnet's size.
+        """
         lost = 0
+        _commnet_style = comm_mode in ("commnet", "commnet_sep")
 
         if not use_memory:
-            # GRUCell(enc_dim + comm_dim, mem_dim):
-            #   weight_ih: 3*mem_dim*(enc+comm), weight_hh: 3*mem*mem, biases: 6*mem
-            # But enc_dim isn't known yet (it's what we're computing).
-            # Use hidden_dim as the reference (full model uses hidden_dim as enc_dim)
-            gru_input = hidden_dim + comm_dim
+            # GRUCell(hidden_dim, mem_dim) — commnet GRU takes enc_dim input
+            gru_input = hidden_dim  # no comm concatenation in commnet
             lost += 3 * mem_dim * gru_input   # weight_ih
             lost += 3 * mem_dim * mem_dim     # weight_hh
             lost += 6 * mem_dim               # biases
             lost += mem_dim                   # h_init parameter
 
         if not use_comm:
-            # TargetedComm: key, value, query heads
-            input_dim = hidden_dim + mem_dim
-            lost += input_dim * comm_dim + comm_dim  # key_head
-            lost += input_dim * comm_dim + comm_dim  # value_head
-            lost += input_dim * comm_dim + comm_dim  # query_head
+            if _commnet_style:
+                # commnet comm = single Linear(mem_dim, enc_dim or mem_dim)
+                proj_out = hidden_dim  # enc_dim for commnet, mem_dim for commnet_sep
+                lost += mem_dim * proj_out + proj_out
+            else:
+                # TargetedComm: key, value, query heads
+                input_dim = hidden_dim + mem_dim
+                lost += input_dim * comm_dim + comm_dim  # key_head
+                lost += input_dim * comm_dim + comm_dim  # value_head
+                lost += input_dim * comm_dim + comm_dim  # query_head
 
-        if use_comm and not use_memory:
-            # comm_z_proj is ADDED (not lost)
+        if use_comm and not use_memory and not _commnet_style:
+            # TargetedComm comm_only: comm_z_proj is ADDED (not lost)
             lost -= hidden_dim * mem_dim + mem_dim
-
-        if use_memory and not use_comm:
-            # GRU input shrinks from (enc+comm) to enc
-            # Lost: 3*mem_dim*comm_dim from weight_ih
-            lost += 3 * mem_dim * comm_dim
-            # Also lost: m_bar_prev buffer (not a param, doesn't count)
+        # commnet comm_only: comm_mean_proj stays Linear(enc_dim, enc_dim) ≈ same size as
+        # full commnet's Linear(mem_dim, enc_dim) when enc_dim==mem_dim — no adjustment needed
 
         return max(lost, 0)
 
     def _compute_expanded_hidden(
         self, obs_dim, n_actions, hidden_dim, mem_dim, comm_dim,
-        extra_params, use_memory, use_comm,
+        extra_params, use_memory, use_comm, comm_mode: str = "commnet",
     ) -> int:
         """Compute expanded hidden dim to compensate for lost parameters."""
         if extra_params <= 0:
             return hidden_dim
 
+        _commnet_style = comm_mode in ("commnet", "commnet_sep")
         new_dim = hidden_dim
         while True:
             new_dim += 1
@@ -249,6 +268,10 @@ class MemeticFoundationAC(nn.Module):
             if use_memory:
                 act_in_new = new_dim + mem_dim
                 act_in_old = hidden_dim + mem_dim
+            elif use_comm and _commnet_style:
+                # commnet comm_only: additive, actor still sees enc_dim
+                act_in_new = new_dim
+                act_in_old = hidden_dim
             elif use_comm:
                 act_in_new = new_dim + comm_dim
                 act_in_old = hidden_dim + comm_dim
@@ -262,9 +285,13 @@ class MemeticFoundationAC(nn.Module):
             gained = (enc_new - enc_old) + (act_new - act_old)
 
             # Account for surviving module growth
-            if use_comm and not use_memory:
-                gained += (new_dim - hidden_dim) * comm_dim * 3  # comm heads
+            if use_comm and not use_memory and not _commnet_style:
+                gained += (new_dim - hidden_dim) * comm_dim * 3  # TargetedComm heads
                 gained += (new_dim - hidden_dim) * mem_dim       # comm_z_proj
+            elif use_comm and not use_memory and _commnet_style:
+                # comm_mean_proj: Linear(new_dim, new_dim) grows quadratically
+                gained += new_dim * new_dim - hidden_dim * hidden_dim  # weight
+                gained += new_dim - hidden_dim                          # bias
 
             if use_memory and not use_comm:
                 # GRU weight_ih grows with enc_dim
@@ -340,6 +367,13 @@ class MemeticFoundationAC(nn.Module):
             c = (total - h) / max(N - 1, 1)
             m_bar = self.comm_mean_proj(c)          # (N, mem_dim)
             self.last_comm_attn = None
+        elif not self.use_memory and self.comm_mode == "commnet" \
+                and self.comm_mean_proj is not None:
+            # comm_only commnet: mean of neighbors' encoded obs → additive to u
+            N = u.shape[0]
+            total = u.sum(dim=0, keepdim=True)
+            c = (total - u) / max(N - 1, 1)
+            m_bar = self.comm_mean_proj(c)          # (N, enc_dim) — additive
         elif self.use_comm and self.comm is not None:
             if h is not None:
                 m_bar, comm_attn, _ = self.comm(u, h)
@@ -358,6 +392,8 @@ class MemeticFoundationAC(nn.Module):
             actor_input = torch.cat([u, h, m_bar], dim=-1)   # [u; personal_meme; social_meme]
         elif h is not None:
             actor_input = torch.cat([u, h], dim=-1)
+        elif not self.use_memory and self.comm_mode == "commnet" and m_bar is not None:
+            actor_input = u + m_bar                           # additive: u + proj(mean_u_others)
         elif m_bar is not None:
             actor_input = torch.cat([u, m_bar], dim=-1)
         else:
@@ -514,6 +550,15 @@ class MemeticFoundationAC(nn.Module):
                 norms_dict["memory_delta"] = (h_shadow - h).norm().item()
                 actor_input = torch.cat([u, _tile(h_shadow)], dim=-1)
 
+        elif self.comm_mode == "commnet" and self.comm_mean_proj is not None:
+            # comm_only commnet: mean of neighbors' u → additive → actor
+            # Gradient: loss → actor → (u + c_proj) → comm_mean_proj + encoder
+            total = u_group.sum(dim=0, keepdim=True)
+            c = (total - u_group) / max(N - 1, 1)
+            c_proj = self.comm_mean_proj(c)             # (N, enc_dim)
+            norms_dict["message_in"] = c_proj.norm().item()
+            actor_input = u + _tile(c_proj)             # additive, stays enc_dim
+
         elif self.use_comm and self.comm is not None:
             # Comm only (no GRU): loss → actor → m_bar → comm + encoder
             z_proj = self.comm_z_proj(u_group)
@@ -549,6 +594,8 @@ class MemeticFoundationAC(nn.Module):
             self.m_bar_prev.detach_()
 
     def reset_memory(self) -> None:
+        if self.persistent_memory:
+            return  # persistent: memory carries across episode boundaries
         if self.memory is not None:
             self.memory.reset_state()
         if self._gru_takes_comm and hasattr(self, "m_bar_prev"):
@@ -564,12 +611,13 @@ class MemeticFoundationAC(nn.Module):
             self.memory.set_state(state)
 
     def get_variant_name(self) -> str:
+        persist = "_persistent" if self.persistent_memory else ""
         if self.use_memory and self.use_comm:
-            return f"full_{self.comm_mode}"
+            return f"full_{self.comm_mode}{persist}"
         elif self.use_comm and not self.use_memory:
-            return "comm_only"
+            return f"comm_only_{self.comm_mode}"
         elif self.use_memory:
-            return "memory_only"
+            return f"memory_only{persist}"
         else:
             return "baseline"
 

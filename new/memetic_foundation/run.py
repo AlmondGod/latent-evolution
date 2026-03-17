@@ -78,6 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Disable communication (memory-only or baseline)")
     parser.add_argument("--no-gate", action="store_true",
                         help="Disable IC3Net comm gate (always-on communication)")
+    parser.add_argument("--persistent-memory", action="store_true",
+                        help="Do not reset GRU hidden state between episodes — memory persists "
+                             "across episode boundaries (even at eval time).")
     parser.add_argument("--no-param-eq", action="store_true",
                         help="Disable parameter equalization — all variants use enc_dim=hidden_dim "
                              "(faster iteration, less fair comparison)")
@@ -241,6 +244,7 @@ def run_train(args):
         mem_decay=args.mem_decay,
         comm_mode=args.comm_mode,
         param_eq=not args.no_param_eq,
+        persistent_memory=getattr(args, "persistent_memory", False),
     )
 
     if args.load_path and os.path.exists(args.load_path):
@@ -427,6 +431,7 @@ def run_eval(args):
         mem_decay=args.mem_decay,
         comm_mode=args.comm_mode,
         param_eq=not args.no_param_eq,
+        persistent_memory=getattr(args, "persistent_memory", False),
     )
     trainer.load(args.load_path)
     trainer.policy.eval()
