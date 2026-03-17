@@ -78,13 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Disable communication (memory-only or baseline)")
     parser.add_argument("--no-gate", action="store_true",
                         help="Disable IC3Net comm gate (always-on communication)")
-    parser.add_argument("--comm-mode", type=str, default="ic3net",
-                        choices=["ic3net", "attention_integrated", "attention_separated", "commnet"],
-                        help="Communication architecture: "
-                             "'ic3net' (binary gate, concat m_bar_prev into GRU), "
-                             "'attention_integrated' (soft attn, concat m_bar_prev into GRU), "
-                             "'attention_separated' (soft attn, GRU sees only obs, actor=[u;h;c]), "
-                             "'commnet' (CommNet/IC3Net-style: additive u+proj(mean_h), no noise corruption)")
+    parser.add_argument("--no-param-eq", action="store_true",
+                        help="Disable parameter equalization — all variants use enc_dim=hidden_dim "
+                             "(faster iteration, less fair comparison)")
+    parser.add_argument("--comm-mode", type=str, default="commnet",
+                        choices=["ic3net", "attention_integrated", "attention_separated",
+                                 "commnet", "commnet_sep"],
+                        help="Communication architecture. "
+                             "'commnet': additive u+proj(mean_h), meme=personal+social. "
+                             "'commnet_sep': pure personal meme h, actor gets [u;h;mean(h_others)].")
     parser.add_argument("--n-adversaries", type=int, default=3,
                         help="Number of predator agents for simple_tag (default: 3)")
     parser.add_argument("--obs-radius", type=float, default=None,
@@ -238,6 +240,7 @@ def run_train(args):
         use_gate=not args.no_gate,
         mem_decay=args.mem_decay,
         comm_mode=args.comm_mode,
+        param_eq=not args.no_param_eq,
     )
 
     if args.load_path and os.path.exists(args.load_path):
@@ -423,6 +426,7 @@ def run_eval(args):
         use_gate=not args.no_gate,
         mem_decay=args.mem_decay,
         comm_mode=args.comm_mode,
+        param_eq=not args.no_param_eq,
     )
     trainer.load(args.load_path)
     trainer.policy.eval()

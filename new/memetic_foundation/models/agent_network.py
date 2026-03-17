@@ -89,7 +89,8 @@ class MemeticFoundationAC(nn.Module):
         use_comm: bool = True,
         use_gate: bool = True,
         mem_decay: float = 0.005,
-        comm_mode: str = "ic3net",  # 'ic3net'|'attention_integrated'|'attention_separated'|'commnet'
+        comm_mode: str = "commnet",
+        param_eq: bool = False,  # disabled: all variants use hidden_dim, no widening
     ):
         super().__init__()
         self.obs_dim = obs_dim
@@ -101,75 +102,79 @@ class MemeticFoundationAC(nn.Module):
         self.comm_dim = comm_dim
         self.use_memory = use_memory
         self.use_comm = use_comm
-        self.use_gate = use_gate and (comm_mode == "ic3net")  # gate only for ic3net
+        self.use_gate = use_gate and (comm_mode == "ic3net")
         self.comm_mode = comm_mode
-        # commnet: additive integration, no m_bar_prev buffer, no TargetedComm
-        _commnet = use_comm and use_memory and (comm_mode == "commnet")
 
-        # --- Parameter equalization ---
-        ablated_params = self._estimate_ablated_params(
-            hidden_dim, mem_dim, comm_dim, n_agents, use_memory, use_comm,
-        )
-        expanded_hidden = self._compute_expanded_hidden(
-            obs_dim, n_actions, hidden_dim, mem_dim, comm_dim, ablated_params,
-            use_memory, use_comm,
-        )
-        enc_dim = expanded_hidden if ablated_params > 0 else hidden_dim
-        actor_hidden = expanded_hidden if ablated_params > 0 else hidden_dim
+        # Classify mode
+        _concat_comm = use_comm and use_memory and comm_mode in ("ic3net", "attention_integrated")
+        _additive_comm = use_comm and use_memory and comm_mode == "commnet"
+        _sep_comm = use_comm and use_memory and comm_mode in ("attention_separated", "commnet_sep")
+
+        # --- Encoder dim: fixed at hidden_dim unless param_eq enabled ---
+        if param_eq:
+            ablated_params = self._estimate_ablated_params(
+                hidden_dim, mem_dim, comm_dim, n_agents, use_memory, use_comm,
+            )
+            expanded_hidden = self._compute_expanded_hidden(
+                obs_dim, n_actions, hidden_dim, mem_dim, comm_dim, ablated_params,
+                use_memory, use_comm,
+            )
+            enc_dim = expanded_hidden if ablated_params > 0 else hidden_dim
+        else:
+            enc_dim = hidden_dim
         self.enc_dim = enc_dim
+        actor_hidden = hidden_dim  # always hidden_dim for actor MLP width
 
-        # --- Core modules ---
+        # --- Encoder ---
         self.encoder = ObsEncoder(obs_dim, enc_dim)
 
-        # GRU memory (only if use_memory)
-        # commnet/separated: GRU takes only obs (addition or no comm), no m_bar_prev
-        self._gru_takes_comm = use_comm and comm_mode in ("ic3net", "attention_integrated")
+        # --- GRU memory ---
+        # Concat modes: GRU takes [u; m̄_prev], needs m_bar_prev buffer
+        # Additive (commnet): GRU takes u, comm added before GRU via addition
+        # Separated: GRU takes only u, comm goes to actor
+        self._gru_takes_comm = _concat_comm  # only concat modes use m_bar_prev
         if use_memory:
-            if self._gru_takes_comm:
-                gru_input_dim = enc_dim + comm_dim  # [u; m̄_prev] concatenated
-            else:
-                gru_input_dim = enc_dim  # u only (commnet: adds after projection)
+            gru_input_dim = (enc_dim + comm_dim) if _concat_comm else enc_dim
             self.memory = GRUMemory(n_agents, gru_input_dim, mem_dim, mem_decay)
-            # Buffer for previous timestep's communication (concat modes only)
-            if self._gru_takes_comm:
-                self.register_buffer(
-                    "m_bar_prev", torch.zeros(n_agents, comm_dim)
-                )
+            if _concat_comm:
+                self.register_buffer("m_bar_prev", torch.zeros(n_agents, comm_dim))
         else:
             self.memory = None
 
-        # Communication modules
+        # --- Communication modules ---
         _use_gate = use_gate and (comm_mode == "ic3net")
-        if _commnet:
-            # CommNet: no TargetedComm attention module needed.
-            # Message = h itself. Aggregation = mean. Integration = additive.
-            # One linear projection: mem_dim → enc_dim (applied to mean neighbor h).
-            self.comm = None
-            self.comm_z_proj = None
-            self.comm_mean_proj = nn.Linear(mem_dim, enc_dim)
-            nn.init.zeros_(self.comm_mean_proj.weight)  # start with zero comm signal
+        self.comm = None
+        self.comm_z_proj = None
+        self.comm_mean_proj = None
+
+        if _additive_comm or _sep_comm:
+            # commnet / commnet_sep: mean of neighbors' h → linear proj → additive or actor
+            # Zero-init so at step 0 comm contributes nothing (starts as memory_only)
+            proj_out = enc_dim if _additive_comm else mem_dim
+            self.comm_mean_proj = nn.Linear(mem_dim, proj_out)
+            nn.init.zeros_(self.comm_mean_proj.weight)
             nn.init.zeros_(self.comm_mean_proj.bias)
         elif use_comm:
+            # ic3net / attention variants: TargetedComm attention module
             self.comm = TargetedComm(enc_dim, mem_dim, comm_dim, use_gate=_use_gate)
-            self.comm_mean_proj = None
             if not use_memory:
                 self.comm_z_proj = nn.Linear(enc_dim, mem_dim)
-            else:
-                self.comm_z_proj = None
-        else:
-            self.comm = None
-            self.comm_z_proj = None
-            self.comm_mean_proj = None
 
-        # --- Actor head ---
-        if use_memory and use_comm and comm_mode == "attention_separated":
-            actor_in = enc_dim + mem_dim + comm_dim  # [u; h; c] — personal + social
+        # --- Actor input dim ---
+        if use_memory and use_comm:
+            if comm_mode == "commnet":
+                actor_in = enc_dim + mem_dim          # [u; h] — comm baked into h
+            elif comm_mode in ("commnet_sep", "attention_separated"):
+                proj_out = mem_dim if comm_mode == "commnet_sep" else comm_dim
+                actor_in = enc_dim + mem_dim + proj_out  # [u; h; c]
+            else:
+                actor_in = enc_dim + mem_dim          # [u; h] — integrated
         elif use_memory:
-            actor_in = enc_dim + mem_dim      # [u; h] — commnet and integrated both use this
+            actor_in = enc_dim + mem_dim
         elif use_comm:
-            actor_in = enc_dim + comm_dim     # [u; m̄]
+            actor_in = enc_dim + comm_dim
         else:
-            actor_in = enc_dim                # just u
+            actor_in = enc_dim
 
         self.actor = nn.Sequential(
             nn.Linear(actor_in, actor_hidden),
@@ -307,30 +312,35 @@ class MemeticFoundationAC(nn.Module):
         # --- GRU memory update ---
         h = None
         if self.use_memory and self.memory is not None:
+            N = u.shape[0]
             if self.comm_mode == "commnet" and self.comm_mean_proj is not None:
-                # CommNet: additive integration — gru_input = u + proj(mean_neighbors_h)
-                # Read previous step's h from buffer (no circular dependency)
-                h_buf = self.memory()  # (N, mem_dim) — last step's hidden states
-                N = u.shape[0]
-                # Mean of others' h (exclude self via sum-self trick)
-                total = h_buf.sum(dim=0, keepdim=True)        # (1, mem_dim)
-                c = (total - h_buf) / max(N - 1, 1)           # (N, mem_dim)
-                c_proj = self.comm_mean_proj(c)               # (N, enc_dim)
-                gru_input = u + c_proj                        # additive! same dim as u
+                # Additive: gru_input = u + proj(mean of others' h from last step)
+                h_buf = self.memory()
+                total = h_buf.sum(dim=0, keepdim=True)
+                c = (total - h_buf) / max(N - 1, 1)
+                gru_input = u + self.comm_mean_proj(c)     # enc_dim + enc_dim (additive)
             elif self._gru_takes_comm:
                 gru_input = torch.cat([u, self.m_bar_prev], dim=-1)
             else:
-                gru_input = u  # separated: GRU only sees personal obs
+                gru_input = u  # commnet_sep / separated: GRU sees only personal obs
 
             if not intervene_write_block:
                 h = self.memory.step(gru_input)
             else:
                 h = self.memory()
 
-        # --- Communication (attention-based modes only) ---
+        # --- Communication ---
         m_bar = None
         comm_attn = None
-        if self.use_comm and self.comm is not None:
+        if self.comm_mode in ("commnet_sep", "attention_separated") and h is not None \
+                and self.comm_mean_proj is not None:
+            # commnet_sep: mean of others' CURRENT h → project → goes to actor
+            N = u.shape[0]
+            total = h.sum(dim=0, keepdim=True)
+            c = (total - h) / max(N - 1, 1)
+            m_bar = self.comm_mean_proj(c)          # (N, mem_dim)
+            self.last_comm_attn = None
+        elif self.use_comm and self.comm is not None:
             if h is not None:
                 m_bar, comm_attn, _ = self.comm(u, h)
             else:
@@ -343,9 +353,9 @@ class MemeticFoundationAC(nn.Module):
             self.last_comm_attn = comm_attn.detach()
 
         # --- Action selection ---
-        if self.comm_mode == "attention_separated" and h is not None and m_bar is not None:
-            # Separated: actor sees personal memory AND social context independently
-            actor_input = torch.cat([u, h, m_bar], dim=-1)
+        if self.comm_mode in ("attention_separated", "commnet_sep") \
+                and h is not None and m_bar is not None:
+            actor_input = torch.cat([u, h, m_bar], dim=-1)   # [u; personal_meme; social_meme]
         elif h is not None:
             actor_input = torch.cat([u, h], dim=-1)
         elif m_bar is not None:
@@ -448,20 +458,29 @@ class MemeticFoundationAC(nn.Module):
             norms_dict["memory"] = h.norm().item()
 
             if self.comm_mode == "commnet" and self.comm_mean_proj is not None:
-                # CommNet: additive, differentiable.
-                # Full path: loss → actor → h_shadow → GRU(u + proj(mean_h))
-                #            → GRU_cell + comm_mean_proj
+                # Additive: gru_input = u + proj(mean_h), full gradient path
                 total = h.sum(dim=0, keepdim=True)
-                c = (total - h) / max(N - 1, 1)        # mean of others
+                c = (total - h) / max(N - 1, 1)
                 c_proj = self.comm_mean_proj(c)         # (N, enc_dim)
                 norms_dict["message_in"] = c_proj.norm().item()
-                gru_input = u_group + c_proj            # additive
-                h_shadow = _shadow_gru(gru_input, h)
+                h_shadow = _shadow_gru(u_group + c_proj, h)
                 norms_dict["memory_delta"] = (h_shadow - h).norm().item()
                 actor_input = torch.cat([u, _tile(h_shadow)], dim=-1)
 
+            elif self.comm_mode == "commnet_sep" and self.comm_mean_proj is not None:
+                # GRU sees only u; social meme = mean of others' h → actor
+                # Gradient paths: loss → actor → h_shadow → GRU(u) → encoder
+                #                 loss → actor → c_proj → comm_mean_proj
+                h_shadow = _shadow_gru(u_group, h)
+                total = h_shadow.sum(dim=0, keepdim=True)
+                c = (total - h_shadow) / max(N - 1, 1)
+                c_proj = self.comm_mean_proj(c)         # (N, mem_dim)
+                norms_dict["message_in"] = c_proj.norm().item()
+                norms_dict["memory_delta"] = (h_shadow - h).norm().item()
+                actor_input = torch.cat([u, _tile(h_shadow), _tile(c_proj)], dim=-1)
+
             elif self.use_comm and self.comm is not None:
-                if self.comm_mode == "attention_separated":
+                if self.comm_mode in ("attention_separated",):
                     # GRU stays pure (no comm input).
                     # Shadow GRU: loss → actor → h_shadow → GRU_cell(u) → encoder
                     h_shadow = _shadow_gru(u_group, h)
@@ -546,8 +565,7 @@ class MemeticFoundationAC(nn.Module):
 
     def get_variant_name(self) -> str:
         if self.use_memory and self.use_comm:
-            mode_suffix = f"_{self.comm_mode}" if self.comm_mode != "ic3net" else ""
-            return f"full{mode_suffix}"
+            return f"full_{self.comm_mode}"
         elif self.use_comm and not self.use_memory:
             return "comm_only"
         elif self.use_memory:
