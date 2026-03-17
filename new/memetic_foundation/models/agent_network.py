@@ -16,19 +16,27 @@ Communication modes (comm_mode):
 
 Forward pass per comm_mode:
 
-  ic3net / attention_integrated:
+  ic3net / attention_integrated (forward_step):
     1. u = encoder(obs)
     2. h = GRU([u; m̄_prev], h)    ← received comm feeds into personal memory
     3. m̄ = comm(u, h)
     4. a ~ π([u; h])
     5. store m̄
 
-  attention_separated:
+  attention_separated (forward_step):
     1. u = encoder(obs)
     2. h = GRU(u, h)               ← h is purely personal (no social input)
     3. c = Attention(u, h)         ← social context from pure personal memes
     4. a ~ π([u; h; c])            ← action sees personal + social memory
     (no m̄_prev buffer needed — comm is synchronous, not delayed)
+
+PPO evaluate_actions uses a "shadow GRU step" for differentiable comm:
+  - GRU and comm weights receive policy gradient via h_shadow (not detached buffer)
+  - ic3net/integrated: h_shadow = GRU([u; m̄], h_buf), actor sees [u; h_shadow]
+  - separated:         h_shadow = GRU(u, h_buf), m̄ = comm(u, h_shadow),
+                       actor sees [u; h_shadow; m̄]
+  This is the key fix: previously comm only received gradient from a tiny L2
+  auxiliary loss, not from the policy objective.
 
 Ablation variants:
   - Full:        h = GRU([u; m̄_prev], h), comm active
@@ -360,60 +368,111 @@ class MemeticFoundationAC(nn.Module):
         actions: torch.Tensor,
         avail_actions: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
-        """Evaluate stored actions for PPO update.
+        """Evaluate stored actions for PPO update with differentiable communication.
 
-        Uses current GRU hidden state as fixed context (no GRU step during
-        PPO evaluation — same approach as the slot-based version).
+        The key fix over the previous version: communication is recomputed with
+        current parameters and flows through to the actor via a shadow GRU step,
+        giving the comm module a real policy gradient signal.
+
+        Gradient paths per mode:
+          ic3net / attention_integrated:
+            loss → actor → h_shadow → GRU_cell([u; m_bar]) → comm_weights + encoder
+          attention_separated:
+            loss → actor → [h_shadow; m_bar] → GRU_cell(u) + comm_weights → encoder
+          memory_only:
+            loss → actor → h_shadow → GRU_cell(u) → encoder
+          baseline:
+            loss → actor → u → encoder
+
+        The shadow GRU step approximates h_t using end-of-rollout h as init.
+        This avoids storing per-timestep hidden states while still giving the
+        GRU and comm modules real policy gradient.
 
         Returns: (log_probs, entropy, values, aux_loss, norms_dict)
         """
         u = self.encode(obs)
         B_total = u.shape[0]
         N = self.n_agents
+        u_group = u[:N]  # (N, enc_dim) — one copy per real agent
 
         norms_dict = {
             "memory": 0.0,
             "memory_delta": 0.0,
             "message_out": 0.0,
             "message_in": 0.0,
-            "gate_open_frac": 1.0,  # fraction of agents with gate open
+            "gate_open_frac": 1.0,
         }
+        aux_loss = torch.tensor(0.0, device=obs.device)
 
-        # --- Build actor input ---
+        # Helper: tile (N, d) → (B_total, d)
+        def _tile(t):
+            if B_total == N:
+                return t
+            n_reps = (B_total + N - 1) // N
+            return t.repeat(n_reps, 1)[:B_total]
+
+        # Helper: shadow GRU step (differentiable, does NOT update buffer)
+        def _shadow_gru(x, h_buf):
+            h_s = self.memory.gru_cell(x, h_buf)
+            if self.memory.mem_decay > 0:
+                h_s = h_s * (1.0 - self.memory.mem_decay)
+            return h_s
+
+        # --- Build actor input with differentiable comm ---
         if self.use_memory and self.memory is not None:
-            h = self.memory()  # (N, mem_dim)
+            h = self.memory()  # (N, mem_dim) — buffer, no grad
             norms_dict["memory"] = h.norm().item()
 
-            if B_total != N:
-                n_repeats = (B_total + N - 1) // N
-                h_expanded = h.repeat(n_repeats, 1)[:B_total]
-            else:
-                h_expanded = h
+            if self.use_comm and self.comm is not None:
+                if self.comm_mode == "attention_separated":
+                    # GRU stays pure (no comm input).
+                    # Shadow GRU: loss → actor → h_shadow → GRU_cell(u) → encoder
+                    h_shadow = _shadow_gru(u_group, h)
+                    # Comm from fresh h_shadow so both GRU and comm get policy gradient.
+                    # loss → actor → m_bar → comm(u, h_shadow) → GRU → encoder
+                    m_bar, _, _ = self.comm(u_group, h_shadow)
+                    norms_dict["message_in"] = m_bar.norm().item()
+                    norms_dict["memory_delta"] = (h_shadow - h).norm().item()
+                    actor_input = torch.cat([u, _tile(h_shadow), _tile(m_bar)], dim=-1)
 
-            if self.comm_mode == "attention_separated" and self.use_comm and self.comm is not None:
-                # Separated: compute comm from pure h, concatenate separately
-                m_bar_eval, _, _ = self.comm(u[:N], h)
-                if B_total != N:
-                    m_bar_expanded = m_bar_eval.repeat(n_repeats, 1)[:B_total]
                 else:
-                    m_bar_expanded = m_bar_eval
-                actor_input = torch.cat([u, h_expanded, m_bar_expanded], dim=-1)
-                norms_dict["message_in"] = m_bar_eval.norm().item()
+                    # ic3net / attention_integrated: social info merges into GRU.
+                    # 1. Compute messages with current comm weights.
+                    # 2. Shadow GRU with [u; m_bar] → h_shadow.
+                    # Full path: loss → actor → h_shadow → GRU([u; m_bar]) → comm + encoder
+                    m_bar, _, gate_ent = self.comm(u_group, h)
+                    norms_dict["message_in"] = m_bar.norm().item()
+                    norms_dict["message_out"] = m_bar.norm().item()
+                    gru_input = torch.cat([u_group, m_bar], dim=-1)
+                    h_shadow = _shadow_gru(gru_input, h)
+                    norms_dict["memory_delta"] = (h_shadow - h).norm().item()
+                    actor_input = torch.cat([u, _tile(h_shadow)], dim=-1)
+
+                    # Gate entropy for ic3net encourages selectivity
+                    if self.comm_mode == "ic3net":
+                        aux_loss = aux_loss + 0.05 * gate_ent
+                        if self.use_gate and self.comm.gate is not None:
+                            gate_hard, _ = self.comm.gate(h)
+                            norms_dict["gate_open_frac"] = gate_hard.mean().item()
+
             else:
-                actor_input = torch.cat([u, h_expanded], dim=-1)
+                # Memory only: loss → actor → h_shadow → GRU_cell(u) → encoder
+                h_shadow = _shadow_gru(u_group, h)
+                norms_dict["memory_delta"] = (h_shadow - h).norm().item()
+                actor_input = torch.cat([u, _tile(h_shadow)], dim=-1)
+
         elif self.use_comm and self.comm is not None:
-            # comm_only: run comm on first N agents, tile
-            z_proj = self.comm_z_proj(u[:N])
-            m_bar, _, _ = self.comm(u[:N], z_proj)
-            if B_total != N:
-                n_repeats = (B_total + N - 1) // N
-                m_bar_expanded = m_bar.repeat(n_repeats, 1)[:B_total]
-            else:
-                m_bar_expanded = m_bar
-            actor_input = torch.cat([u, m_bar_expanded], dim=-1)
+            # Comm only (no GRU): loss → actor → m_bar → comm + encoder
+            z_proj = self.comm_z_proj(u_group)
+            m_bar, _, gate_ent = self.comm(u_group, z_proj)
             norms_dict["message_in"] = m_bar.norm().item()
-            norms_dict["message_out"] = norms_dict["message_in"]
+            norms_dict["message_out"] = m_bar.norm().item()
+            actor_input = torch.cat([u, _tile(m_bar)], dim=-1)
+            if self.comm_mode == "ic3net":
+                aux_loss = aux_loss + 0.05 * gate_ent
+
         else:
+            # Baseline: loss → actor → u → encoder
             actor_input = u
 
         logits = self.actor(actor_input)
@@ -423,49 +482,6 @@ class MemeticFoundationAC(nn.Module):
         log_probs = dist.log_prob(actions)
         entropy = dist.entropy()
         values = self.get_value(state)
-
-        # --- Auxiliary loss & norms ---
-        # Run a GRU step on the first N obs to provide gradient signal
-        # to the GRU cell parameters. This is a "shadow step" that doesn't
-        # update the actual hidden state but lets gradients flow.
-        aux_loss = torch.tensor(0.0, device=obs.device)
-
-        if B_total >= N and self.use_memory and self.memory is not None:
-            u_group = u[:N]
-            h_current = self.memory()  # (N, mem_dim) — buffer, detached
-
-            if self.use_comm:
-                # Build GRU input with m_bar_prev
-                gru_input = torch.cat([u_group, self.m_bar_prev], dim=-1)
-            else:
-                gru_input = u_group
-
-            # Shadow GRU step (with gradients, but doesn't update state)
-            h_shadow = self.memory.gru_cell(gru_input, h_current)
-            aux_loss = aux_loss + 0.001 * h_shadow.pow(2).mean()
-            norms_dict["memory_delta"] = (h_shadow - h_current).norm().item()
-
-        if B_total >= N and self.use_comm and self.comm is not None:
-            u_group = u[:N]
-            if self.use_memory and self.memory is not None:
-                h_group = self.memory()
-                m_bar_aux, _, gate_ent = self.comm(u_group, h_group)
-            else:
-                z_proj = self.comm_z_proj(u_group)
-                m_bar_aux, _, gate_ent = self.comm(u_group, z_proj)
-
-            aux_loss = aux_loss + 0.001 * m_bar_aux.pow(2).mean()
-            # Gate entropy only for ic3net; attention modes use softmax (no entropy needed)
-            if self.comm_mode == "ic3net":
-                aux_loss = aux_loss + 0.05 * gate_ent
-            norms_dict["message_in"] = m_bar_aux.norm().item()
-            norms_dict["message_out"] = norms_dict["message_in"]
-
-            # Track gate open fraction
-            if self.use_gate and self.comm.gate is not None:
-                z_gate = self.memory().detach() if (self.use_memory and self.memory) else self.comm_z_proj(u_group).detach()
-                gate_hard, _ = self.comm.gate(z_gate)  # returns (gate, gate_soft)
-                norms_dict["gate_open_frac"] = gate_hard.mean().item()
 
         return log_probs, entropy, values, aux_loss, norms_dict
 
