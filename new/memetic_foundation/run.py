@@ -79,11 +79,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-gate", action="store_true",
                         help="Disable IC3Net comm gate (always-on communication)")
     parser.add_argument("--comm-mode", type=str, default="ic3net",
-                        choices=["ic3net", "attention_integrated", "attention_separated"],
+                        choices=["ic3net", "attention_integrated", "attention_separated", "commnet"],
                         help="Communication architecture: "
-                             "'ic3net' (binary gate, m_bar_prev→GRU, default), "
-                             "'attention_integrated' (soft attention, m_bar_prev→GRU, no gate entropy), "
-                             "'attention_separated' (soft attention, GRU sees only obs, actor gets [u;h;c])")
+                             "'ic3net' (binary gate, concat m_bar_prev into GRU), "
+                             "'attention_integrated' (soft attn, concat m_bar_prev into GRU), "
+                             "'attention_separated' (soft attn, GRU sees only obs, actor=[u;h;c]), "
+                             "'commnet' (CommNet/IC3Net-style: additive u+proj(mean_h), no noise corruption)")
     parser.add_argument("--n-adversaries", type=int, default=3,
                         help="Number of predator agents for simple_tag (default: 3)")
     parser.add_argument("--obs-radius", type=float, default=None,

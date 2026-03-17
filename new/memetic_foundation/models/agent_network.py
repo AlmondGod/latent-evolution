@@ -5,14 +5,17 @@ Single GRU per agent replaces the slot-based memory bank. The GRU hidden
 state h serves as both memory representation and recurrent state.
 
 Communication modes (comm_mode):
-  - 'ic3net':                 Binary gate (straight-through) + m̄_prev feeds INTO GRU.
-                              Current default. Gate entropy loss encourages selectivity.
-  - 'attention_integrated':   Soft attention (no gate, no entropy loss) + m̄_prev feeds
-                              INTO GRU. h encodes personal obs AND received social info.
-  - 'attention_separated':    Soft attention (no gate); GRU sees ONLY personal obs.
-                              h stays a pure individual meme; actor gets [u; h; c]
-                              where c = attention-aggregated social context.
-                              Social memory and personal memory interact only at actor.
+  - 'ic3net':                 Binary gate (straight-through) + m̄_prev feeds INTO GRU
+                              via concatenation [u; m̄_prev]. Gate entropy loss.
+  - 'attention_integrated':   Soft attention, m̄_prev feeds INTO GRU via concatenation.
+  - 'attention_separated':    Soft attention; GRU sees ONLY personal obs.
+                              h stays a pure individual meme; actor gets [u; h; c].
+  - 'commnet':                CommNet-style (Sukhbaatar 2016) / IC3Net-style addition.
+                              Message = h itself (no projection). Aggregation = mean of
+                              neighbors' h. Integration = ADDITIVE: gru_input = u + proj(c).
+                              GRU input dim stays enc_dim (no concatenation).
+                              This avoids the noise-corruption problem of cat([u; m̄_prev])
+                              early in training when messages are uninformative.
 
 Forward pass per comm_mode:
 
@@ -86,7 +89,7 @@ class MemeticFoundationAC(nn.Module):
         use_comm: bool = True,
         use_gate: bool = True,
         mem_decay: float = 0.005,
-        comm_mode: str = "ic3net",  # 'ic3net' | 'attention_integrated' | 'attention_separated'
+        comm_mode: str = "ic3net",  # 'ic3net'|'attention_integrated'|'attention_separated'|'commnet'
     ):
         super().__init__()
         self.obs_dim = obs_dim
@@ -100,6 +103,8 @@ class MemeticFoundationAC(nn.Module):
         self.use_comm = use_comm
         self.use_gate = use_gate and (comm_mode == "ic3net")  # gate only for ic3net
         self.comm_mode = comm_mode
+        # commnet: additive integration, no m_bar_prev buffer, no TargetedComm
+        _commnet = use_comm and use_memory and (comm_mode == "commnet")
 
         # --- Parameter equalization ---
         ablated_params = self._estimate_ablated_params(
@@ -117,15 +122,15 @@ class MemeticFoundationAC(nn.Module):
         self.encoder = ObsEncoder(obs_dim, enc_dim)
 
         # GRU memory (only if use_memory)
-        # attention_separated: GRU takes only obs (no comm), so no m_bar_prev buffer
-        self._gru_takes_comm = use_comm and (comm_mode != "attention_separated")
+        # commnet/separated: GRU takes only obs (addition or no comm), no m_bar_prev
+        self._gru_takes_comm = use_comm and comm_mode in ("ic3net", "attention_integrated")
         if use_memory:
             if self._gru_takes_comm:
-                gru_input_dim = enc_dim + comm_dim  # [u; m̄_prev]
+                gru_input_dim = enc_dim + comm_dim  # [u; m̄_prev] concatenated
             else:
-                gru_input_dim = enc_dim  # just u (separated or no comm)
+                gru_input_dim = enc_dim  # u only (commnet: adds after projection)
             self.memory = GRUMemory(n_agents, gru_input_dim, mem_dim, mem_decay)
-            # Buffer for previous timestep's communication (not needed for separated)
+            # Buffer for previous timestep's communication (concat modes only)
             if self._gru_takes_comm:
                 self.register_buffer(
                     "m_bar_prev", torch.zeros(n_agents, comm_dim)
@@ -133,25 +138,34 @@ class MemeticFoundationAC(nn.Module):
         else:
             self.memory = None
 
-        # Communication (only if use_comm)
-        # Gate is only used in ic3net mode; attention variants use pure softmax
+        # Communication modules
         _use_gate = use_gate and (comm_mode == "ic3net")
-        if use_comm:
+        if _commnet:
+            # CommNet: no TargetedComm attention module needed.
+            # Message = h itself. Aggregation = mean. Integration = additive.
+            # One linear projection: mem_dim → enc_dim (applied to mean neighbor h).
+            self.comm = None
+            self.comm_z_proj = None
+            self.comm_mean_proj = nn.Linear(mem_dim, enc_dim)
+            nn.init.zeros_(self.comm_mean_proj.weight)  # start with zero comm signal
+            nn.init.zeros_(self.comm_mean_proj.bias)
+        elif use_comm:
             self.comm = TargetedComm(enc_dim, mem_dim, comm_dim, use_gate=_use_gate)
+            self.comm_mean_proj = None
             if not use_memory:
-                # No memory → need projection for comm input
                 self.comm_z_proj = nn.Linear(enc_dim, mem_dim)
             else:
                 self.comm_z_proj = None
         else:
             self.comm = None
             self.comm_z_proj = None
+            self.comm_mean_proj = None
 
         # --- Actor head ---
         if use_memory and use_comm and comm_mode == "attention_separated":
             actor_in = enc_dim + mem_dim + comm_dim  # [u; h; c] — personal + social
         elif use_memory:
-            actor_in = enc_dim + mem_dim      # [u; h]
+            actor_in = enc_dim + mem_dim      # [u; h] — commnet and integrated both use this
         elif use_comm:
             actor_in = enc_dim + comm_dim     # [u; m̄]
         else:
@@ -293,7 +307,17 @@ class MemeticFoundationAC(nn.Module):
         # --- GRU memory update ---
         h = None
         if self.use_memory and self.memory is not None:
-            if self._gru_takes_comm:
+            if self.comm_mode == "commnet" and self.comm_mean_proj is not None:
+                # CommNet: additive integration — gru_input = u + proj(mean_neighbors_h)
+                # Read previous step's h from buffer (no circular dependency)
+                h_buf = self.memory()  # (N, mem_dim) — last step's hidden states
+                N = u.shape[0]
+                # Mean of others' h (exclude self via sum-self trick)
+                total = h_buf.sum(dim=0, keepdim=True)        # (1, mem_dim)
+                c = (total - h_buf) / max(N - 1, 1)           # (N, mem_dim)
+                c_proj = self.comm_mean_proj(c)               # (N, enc_dim)
+                gru_input = u + c_proj                        # additive! same dim as u
+            elif self._gru_takes_comm:
                 gru_input = torch.cat([u, self.m_bar_prev], dim=-1)
             else:
                 gru_input = u  # separated: GRU only sees personal obs
@@ -303,7 +327,7 @@ class MemeticFoundationAC(nn.Module):
             else:
                 h = self.memory()
 
-        # --- Communication ---
+        # --- Communication (attention-based modes only) ---
         m_bar = None
         comm_attn = None
         if self.use_comm and self.comm is not None:
@@ -423,7 +447,20 @@ class MemeticFoundationAC(nn.Module):
             h = self.memory()  # (N, mem_dim) — buffer, no grad
             norms_dict["memory"] = h.norm().item()
 
-            if self.use_comm and self.comm is not None:
+            if self.comm_mode == "commnet" and self.comm_mean_proj is not None:
+                # CommNet: additive, differentiable.
+                # Full path: loss → actor → h_shadow → GRU(u + proj(mean_h))
+                #            → GRU_cell + comm_mean_proj
+                total = h.sum(dim=0, keepdim=True)
+                c = (total - h) / max(N - 1, 1)        # mean of others
+                c_proj = self.comm_mean_proj(c)         # (N, enc_dim)
+                norms_dict["message_in"] = c_proj.norm().item()
+                gru_input = u_group + c_proj            # additive
+                h_shadow = _shadow_gru(gru_input, h)
+                norms_dict["memory_delta"] = (h_shadow - h).norm().item()
+                actor_input = torch.cat([u, _tile(h_shadow)], dim=-1)
+
+            elif self.use_comm and self.comm is not None:
                 if self.comm_mode == "attention_separated":
                     # GRU stays pure (no comm input).
                     # Shadow GRU: loss → actor → h_shadow → GRU_cell(u) → encoder
@@ -436,9 +473,7 @@ class MemeticFoundationAC(nn.Module):
                     actor_input = torch.cat([u, _tile(h_shadow), _tile(m_bar)], dim=-1)
 
                 else:
-                    # ic3net / attention_integrated: social info merges into GRU.
-                    # 1. Compute messages with current comm weights.
-                    # 2. Shadow GRU with [u; m_bar] → h_shadow.
+                    # ic3net / attention_integrated: social info merges into GRU via concat.
                     # Full path: loss → actor → h_shadow → GRU([u; m_bar]) → comm + encoder
                     m_bar, _, gate_ent = self.comm(u_group, h)
                     norms_dict["message_in"] = m_bar.norm().item()
@@ -448,7 +483,6 @@ class MemeticFoundationAC(nn.Module):
                     norms_dict["memory_delta"] = (h_shadow - h).norm().item()
                     actor_input = torch.cat([u, _tile(h_shadow)], dim=-1)
 
-                    # Gate entropy for ic3net encourages selectivity
                     if self.comm_mode == "ic3net":
                         aux_loss = aux_loss + 0.05 * gate_ent
                         if self.use_gate and self.comm.gate is not None:
@@ -514,7 +548,7 @@ class MemeticFoundationAC(nn.Module):
         if self.use_memory and self.use_comm:
             mode_suffix = f"_{self.comm_mode}" if self.comm_mode != "ic3net" else ""
             return f"full{mode_suffix}"
-        elif self.use_comm:
+        elif self.use_comm and not self.use_memory:
             return "comm_only"
         elif self.use_memory:
             return "memory_only"
