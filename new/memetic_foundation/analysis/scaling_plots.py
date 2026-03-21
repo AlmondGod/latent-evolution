@@ -18,53 +18,54 @@ import numpy as np
 
 # ── Raw data ────────────────────────────────────────────────────────────────
 
-Ns = [5, 10, 20]
+Ns = [3, 5, 7, 10, 12, 15, 17, 20]
 
 # Median dist (lower = better). Bad seeds excluded via median robustness.
 perf_dist = {
-    "memory_only":            [0.640, 0.630, 0.860],
-    "commnet_persistent":     [0.740, 0.630, 0.460],
-    "memory_only_persistent": [0.580, 0.630, 0.430],
+    "memory_only":            [None, 0.640, None, 0.630, None, None, None, 0.860],
+    "commnet_persistent":     [None, 0.740, None, 0.630, None, None, None, 0.460],
+    "memory_only_persistent": [None, 0.580, None, 0.630, None, None, None, 0.430],
 }
 perf_rew = {
-    "memory_only":            [-886,  -1439, -2528],
-    "commnet_persistent":     [-974,  -1527, -1994],
-    "memory_only_persistent": [-871,  -1599, -1809],
+    "memory_only":            [None, -886,  None, -1439, None, None, None, -2528],
+    "commnet_persistent":     [None, -974,  None, -1527, None, None, None, -1994],
+    "memory_only_persistent": [None, -871,  None, -1599, None, None, None, -1809],
 }
 
 # Q1 — silhouette score (higher = clearer attractors)
+# N:               3      5      7      10     12     15     17     20
 q1_sil = {
-    "memory_only":            [0.260, 0.841, 0.715],
-    "commnet_persistent":     [0.211, 0.877, 0.649],
-    "memory_only_persistent": [0.727, 0.827, 0.860],
+    "memory_only":            [0.234, 0.260, 0.244, 0.841, 0.387, 0.851, 0.362, 0.715],
+    "commnet_persistent":     [0.303, 0.211, 0.435, 0.877, 0.861, 0.427, 0.583, 0.649],
+    "memory_only_persistent": [0.154, 0.727, 0.285, 0.827, 0.527, 0.304, 0.300, 0.860],
 }
 
 # Q2 — final pairwise cosine similarity (higher = more convergent)
 q2_sim = {
-    "memory_only":            [0.715, 0.731, 0.846],
-    "commnet_persistent":     [0.646, 0.699, 0.585],
-    "memory_only_persistent": [0.956, 0.835, 0.637],
+    "memory_only":            [0.619, 0.715, 0.636, 0.731, None,  None,  None,  0.846],
+    "commnet_persistent":     [0.636, 0.646, 0.657, 0.699, None,  None,  None,  0.585],
+    "memory_only_persistent": [0.690, 0.956, 0.739, 0.835, None,  None,  None,  0.637],
 }
 
 # Q4 — between-agent variance × 10^4 (higher = more specialisation)
 q4_bvar = {
-    "memory_only":            [0.00, 0.01, 0.24],   # scaled ×10^4 for readability
-    "commnet_persistent":     [0.00, 0.00, 0.01],
-    "memory_only_persistent": [0.04, 0.02, 0.02],
+    "memory_only":            [0.00, 0.00, 0.00, 0.01, None, None, None, 0.24],
+    "commnet_persistent":     [0.00, 0.00, 0.00, 0.00, None, None, None, 0.01],
+    "memory_only_persistent": [0.00, 0.04, 0.01, 0.02, None, None, None, 0.02],
 }
 
 # Q5 — delta silhouette (higher = more structured mutations)
 q5_dsil = {
-    "memory_only":            [0.176, 0.413, 0.260],
-    "commnet_persistent":     [0.211, 0.976, 0.963],
-    "memory_only_persistent": [0.950, 0.980, 0.944],
+    "memory_only":            [0.289, 0.176, 0.192, 0.413, 0.924, 0.855, 0.236, 0.260],
+    "commnet_persistent":     [0.405, 0.211, 0.237, 0.976, 0.967, 0.191, 0.292, 0.963],
+    "memory_only_persistent": [0.301, 0.950, 0.313, 0.980, 0.259, 0.926, 0.211, 0.944],
 }
 
 # Q5 — cross-agent delta correlation (higher = socially coupled mutations)
 q5_corr = {
-    "memory_only":            [-0.020, 0.065, 0.049],
-    "commnet_persistent":     [-0.008, 0.063, 0.069],
-    "memory_only_persistent": [ 0.172, 0.184, 0.019],
+    "memory_only":            [-0.017, -0.020,  -0.011, 0.065, 0.025, 0.116, -0.002, 0.049],
+    "commnet_persistent":     [ 0.084, -0.008,   0.000, 0.063, 0.174, 0.099,  0.043, 0.069],
+    "memory_only_persistent": [-0.029,  0.172,  -0.008, 0.184, 0.024, 0.021, -0.006, 0.019],
 }
 
 # ── Style ────────────────────────────────────────────────────────────────────
@@ -87,7 +88,9 @@ MARKERS = {
 
 def plot_metric(ax, data, ylabel, title, higher_better=True, hline=None):
     for v in data:
-        ax.plot(Ns, data[v], marker=MARKERS[v], color=COLORS[v],
+        xs = [n for n, val in zip(Ns, data[v]) if val is not None]
+        ys = [val for val in data[v] if val is not None]
+        ax.plot(xs, ys, marker=MARKERS[v], color=COLORS[v],
                 label=LABELS[v], linewidth=2, markersize=8)
     if hline is not None:
         ax.axhline(hline, color="gray", linestyle="--", linewidth=1, alpha=0.5)
@@ -214,8 +217,9 @@ ax.grid(True, alpha=0.3)
 # Right: specialisation divergence
 ax = axes[1]
 for v in q4_bvar:
-    vals_scaled = [x * 1e4 for x in q4_bvar[v]]  # back to raw ×10^4
-    ax.plot(Ns, vals_scaled, marker=MARKERS[v], color=COLORS[v],
+    xs = [n for n, val in zip(Ns, q4_bvar[v]) if val is not None]
+    vals_scaled = [val * 1e4 for val in q4_bvar[v] if val is not None]
+    ax.plot(xs, vals_scaled, marker=MARKERS[v], color=COLORS[v],
             label=LABELS[v], linewidth=2.5, markersize=10)
 ax.set_xticks(Ns)
 ax.set_xlabel("Number of Agents (N)", fontsize=11)
