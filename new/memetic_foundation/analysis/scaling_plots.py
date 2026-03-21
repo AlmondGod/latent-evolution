@@ -42,9 +42,9 @@ q1_sil = {
 
 # Q2 — final pairwise cosine similarity (higher = more convergent)
 q2_sim = {
-    "memory_only":            [0.619, 0.715, 0.636, 0.731, None,  None,  None,  0.846],
-    "commnet_persistent":     [0.636, 0.646, 0.657, 0.699, None,  None,  None,  0.585],
-    "memory_only_persistent": [0.690, 0.956, 0.739, 0.835, None,  None,  None,  0.637],
+    "memory_only":            [0.619, 0.715, 0.636, 0.731, 0.797, 0.747, 0.626, 0.846],
+    "commnet_persistent":     [0.636, 0.646, 0.657, 0.699, 0.719, 0.564, 0.687, 0.585],
+    "memory_only_persistent": [0.690, 0.956, 0.739, 0.835, 0.572, 0.754, 0.675, 0.637],
 }
 
 # Q4 — between-agent variance × 10^4 (higher = more specialisation)
