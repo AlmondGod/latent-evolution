@@ -296,6 +296,87 @@ class MemeticFoundationTrainer:
             
         return stats
 
+    def probe_rollout(self, n_episodes: int = 10, training_step: int = 0,
+                      save_dir: Optional[str] = None) -> dict:
+        """Run probe episodes and collect per-step hidden states for meme analysis.
+
+        Saves arrays per training_step checkpoint:
+          h        : (total_steps, n_agents, hidden_dim)  — GRU hidden state
+          m_bar    : (total_steps, n_agents, hidden_dim)  — received comm (zeros if mem_only)
+          u        : (total_steps, n_agents, enc_dim)     — encoded obs
+          actions  : (total_steps, n_agents)
+          rewards  : (total_steps, n_agents)              — broadcast scalar reward
+          episode  : (total_steps,)                       — episode index
+          timestep : (total_steps,)                       — within-episode step index
+        """
+        self.policy.eval()
+        saved_memory = self.policy.get_memory_state()
+
+        all_h, all_m, all_u, all_actions, all_rewards = [], [], [], [], []
+        all_episode, all_timestep = [], []
+
+        for ep_idx in range(n_episodes):
+            self.env.reset()
+            self.policy.reset_memory()
+            done = False
+            t = 0
+            while not done:
+                obs = self.env.get_obs()
+                avail = [self.env.get_avail_agent_actions(i) for i in range(self.n_agents)]
+                with torch.no_grad():
+                    obs_t  = torch.tensor(np.array(obs,   dtype=np.float32), device=self.device)
+                    avail_t = torch.tensor(np.array(avail, dtype=np.float32), device=self.device)
+                    step_out = self.policy.forward_step(obs_t, avail_t, deterministic=True)
+
+                actions = step_out["actions"].cpu().numpy()
+                reward, terminated, info = self.env.step(actions.tolist())
+                if isinstance(info, list) and len(info) > 0:
+                    info = info[0]
+
+                # --- collect tensors ---
+                h_np = step_out["h"].cpu().numpy() if step_out["h"] is not None \
+                       else np.zeros((self.n_agents, self.policy.hidden_dim), dtype=np.float32)
+                m_np = step_out["m_bar"].cpu().numpy() if step_out["m_bar"] is not None \
+                       else np.zeros_like(h_np)
+                u_np = step_out["u"].cpu().numpy()
+
+                all_h.append(h_np)           # (n_agents, hidden_dim)
+                all_m.append(m_np)
+                all_u.append(u_np)
+                all_actions.append(actions)  # (n_agents,)
+                all_rewards.append(np.full(self.n_agents, float(reward), dtype=np.float32))
+                all_episode.append(ep_idx)
+                all_timestep.append(t)
+                t += 1
+
+                if isinstance(terminated, (list, dict)):
+                    done = any(terminated.values()) if isinstance(terminated, dict) \
+                           else any(terminated)
+                else:
+                    done = terminated
+
+        # Restore training memory
+        if saved_memory is not None:
+            self.policy.set_memory_state(saved_memory)
+
+        data = {
+            "h":        np.stack(all_h,       axis=0),   # (T, n_agents, hidden_dim)
+            "m_bar":    np.stack(all_m,       axis=0),
+            "u":        np.stack(all_u,       axis=0),
+            "actions":  np.stack(all_actions, axis=0),   # (T, n_agents)
+            "rewards":  np.stack(all_rewards, axis=0),   # (T, n_agents)
+            "episode":  np.array(all_episode, dtype=np.int32),
+            "timestep": np.array(all_timestep, dtype=np.int32),
+            "training_step": np.array(training_step, dtype=np.int64),
+        }
+
+        if save_dir is not None:
+            os.makedirs(save_dir, exist_ok=True)
+            fname = os.path.join(save_dir, f"probe_{training_step:08d}.npz")
+            np.savez_compressed(fname, **data)
+
+        return data
+
     def anneal_lr(self, fraction: float) -> None:
         """Linearly anneal LR: fraction=1.0 → lr_init, fraction=0.0 → lr_min.
 

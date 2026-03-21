@@ -131,6 +131,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Checkpoint every N iterations")
     parser.add_argument("--save-dir", type=str, default="checkpoints")
 
+    # Meme analysis probing
+    parser.add_argument("--probe-interval", type=int, default=0,
+                        help="Run hidden-state probe every N steps (0=disabled). "
+                             "Saves .npz files to <save-dir>/probes/")
+    parser.add_argument("--probe-episodes", type=int, default=10,
+                        help="Number of episodes per probe rollout")
+
     # Eval / test
     parser.add_argument("--eval-episodes", type=int, default=32)
     parser.add_argument("--test-episodes", type=int, default=3)
@@ -341,6 +348,16 @@ def run_train(args):
             )
             trainer.save(ckpt)
             
+        # Meme analysis probe: save hidden states periodically
+        probe_interval = getattr(args, "probe_interval", 0)
+        if probe_interval > 0 and total_steps % probe_interval == 0:
+            probe_dir = os.path.join(args.save_dir, "probes")
+            trainer.probe_rollout(
+                n_episodes=getattr(args, "probe_episodes", 10),
+                training_step=total_steps,
+                save_dir=probe_dir,
+            )
+
         # Run Deterministic Evaluation periodically (every 5 log_intervals)
         if (iteration + 1) % (args.log_interval * 5) == 0:
             eval_stats = trainer.evaluate(test_episodes=5, deterministic=True)
