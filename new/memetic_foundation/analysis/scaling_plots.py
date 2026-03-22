@@ -2,234 +2,215 @@
 scaling_plots.py — Scaling analysis plots for memetic dynamics paper.
 
 Generates:
-  1. Performance vs N (median dist, median reward)
-  2. Key meme metrics vs N (silhouette, delta_sil, cross-agent corr, between_var)
-  3. Combined summary figure
+  1. Performance vs N
+  2. Key meme metrics vs N — including null baseline for silhouette
+  3. Phase transition / commnet collapse figure
 
 Usage:
-  python -m new.memetic_foundation.analysis.scaling_plots --out-dir analysis_out/scaling
+  python -m new.memetic_foundation.analysis.scaling_plots
 """
 import os
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 import numpy as np
 
-# ── Raw data ────────────────────────────────────────────────────────────────
+# ── Output dir ────────────────────────────────────────────────────────────────
+out_dir = os.path.join(os.path.dirname(__file__), "../../scaling_analysis")
+os.makedirs(out_dir, exist_ok=True)
 
-Ns = [3, 5, 7, 10, 12, 15, 17, 20]
+# ── N values ──────────────────────────────────────────────────────────────────
+Ns        = [3, 5, 7, 10, 12, 15, 17, 20]
+Ns_comm   = [3, 5, 10, 20]   # commnet (no persistence) only run at these N
 
-# Median dist (lower = better). Bad seeds excluded via median robustness.
+# ── Performance data ──────────────────────────────────────────────────────────
+# Median final dist across 5 seeds (lower = better).  None = not measured.
 perf_dist = {
-    "memory_only":            [None, 0.640, None, 0.630, None, None, None, 0.860],
-    "commnet_persistent":     [None, 0.740, None, 0.630, None, None, None, 0.460],
-    "memory_only_persistent": [None, 0.580, None, 0.630, None, None, None, 0.430],
+    "memory_only":            [0.580, 0.640, 0.670, 0.630, 0.580, 0.570, 0.420, 0.860],
+    "commnet_persistent":     [0.600, 0.740, 0.500, 0.630, 1.080, 0.430, 0.550, 0.460],
+    "memory_only_persistent": [0.600, 0.580, 0.710, 0.630, 0.580, 0.550, 0.500, 0.430],
+    # commnet (no persistence): most seeds collapsed (dist ~70); median reflects failure
+    "commnet": {3: 0.63, 5: 66.85, 10: 77.81, 20: 31.4},
 }
 perf_rew = {
-    "memory_only":            [None, -886,  None, -1439, None, None, None, -2528],
-    "commnet_persistent":     [None, -974,  None, -1527, None, None, None, -1994],
-    "memory_only_persistent": [None, -871,  None, -1599, None, None, None, -1809],
+    "memory_only":            [ -603,  -886, -1045, -1439, -1601, -1808, -1444, -2528],
+    "commnet_persistent":     [ -567,  -974,  -929, -1527, -2661, -1461, -1853, -1994],
+    "memory_only_persistent": [ -628,  -871, -1195, -1599, -1491, -1693, -1830, -1809],
+    "commnet": {3: -659, 5: -28797, 10: -73706, 20: -52567},
 }
 
-# Q1 — silhouette score (higher = clearer attractors)
-# N:               3      5      7      10     12     15     17     20
-q1_sil = {
-    "memory_only":            [0.234, 0.260, 0.244, 0.841, 0.387, 0.851, 0.362, 0.715],
-    "commnet_persistent":     [0.303, 0.211, 0.435, 0.877, 0.861, 0.427, 0.583, 0.649],
-    "memory_only_persistent": [0.154, 0.727, 0.285, 0.827, 0.527, 0.304, 0.300, 0.860],
+# ── Null baseline silhouette (per-seed mean, 5k sample cap) ───────────────────
+# real_sil ≈ null_sil everywhere → clusters are GRU geometry artifacts
+real_sil = {
+    "memory_only":            [0.217, 0.199, 0.244, 0.332, 0.252, 0.230, 0.328, 0.440],
+    "commnet_persistent":     [0.242, 0.199, 0.213, 0.409, 0.352, 0.246, 0.315, 0.344],
+    "memory_only_persistent": [0.189, 0.239, 0.208, 0.317, 0.247, 0.271, 0.313, 0.305],
+    "commnet": {3: 0.396, 5: 0.387, 10: 0.457, 20: 0.315},
+}
+null_sil = {
+    "memory_only":            [0.215, 0.202, 0.244, 0.331, 0.249, 0.231, 0.329, 0.450],
+    "commnet_persistent":     [0.239, 0.200, 0.210, 0.409, 0.354, 0.242, 0.313, 0.341],
+    "memory_only_persistent": [0.188, 0.228, 0.214, 0.316, 0.249, 0.273, 0.311, 0.305],
+    "commnet": {3: 0.396, 5: 0.375, 10: 0.455, 20: 0.314},
 }
 
-# Q2 — final pairwise cosine similarity (higher = more convergent)
-q2_sim = {
-    "memory_only":            [0.619, 0.715, 0.636, 0.731, 0.797, 0.747, 0.626, 0.846],
-    "commnet_persistent":     [0.636, 0.646, 0.657, 0.699, 0.719, 0.564, 0.687, 0.585],
-    "memory_only_persistent": [0.690, 0.956, 0.739, 0.835, 0.572, 0.754, 0.675, 0.637],
-}
-
-# Q4 — between-agent variance × 10^4 (higher = more specialisation)
-q4_bvar = {
-    "memory_only":            [0.00, 0.00, 0.00, 0.01, None, None, None, 0.24],
-    "commnet_persistent":     [0.00, 0.00, 0.00, 0.00, None, None, None, 0.01],
-    "memory_only_persistent": [0.00, 0.04, 0.01, 0.02, None, None, None, 0.02],
-}
-
-# Q5 — delta silhouette (higher = more structured mutations)
+# ── Q5 delta silhouette ───────────────────────────────────────────────────────
 q5_dsil = {
     "memory_only":            [0.289, 0.176, 0.192, 0.413, 0.924, 0.855, 0.236, 0.260],
     "commnet_persistent":     [0.405, 0.211, 0.237, 0.976, 0.967, 0.191, 0.292, 0.963],
     "memory_only_persistent": [0.301, 0.950, 0.313, 0.980, 0.259, 0.926, 0.211, 0.944],
 }
 
-# Q5 — cross-agent delta correlation (higher = socially coupled mutations)
-q5_corr = {
-    "memory_only":            [-0.017, -0.020,  -0.011, 0.065, 0.025, 0.116, -0.002, 0.049],
-    "commnet_persistent":     [ 0.084, -0.008,   0.000, 0.063, 0.174, 0.099,  0.043, 0.069],
-    "memory_only_persistent": [-0.029,  0.172,  -0.008, 0.184, 0.024, 0.021, -0.006, 0.019],
-}
-
-# ── Style ────────────────────────────────────────────────────────────────────
-
+# ── Style ─────────────────────────────────────────────────────────────────────
 COLORS = {
     "memory_only":            "#4C72B0",
     "commnet_persistent":     "#DD8452",
     "memory_only_persistent": "#55A868",
+    "commnet":                "#C44E52",
 }
 LABELS = {
-    "memory_only":            "Memory Only",
+    "memory_only":            "Memory Only (episodic)",
     "commnet_persistent":     "CommNet + Persistent",
     "memory_only_persistent": "Memory Persistent",
+    "commnet":                "CommNet (episodic) ✗",
 }
 MARKERS = {
     "memory_only":            "o",
     "commnet_persistent":     "s",
     "memory_only_persistent": "^",
+    "commnet":                "X",
 }
 
-def plot_metric(ax, data, ylabel, title, higher_better=True, hline=None):
-    for v in data:
-        xs = [n for n, val in zip(Ns, data[v]) if val is not None]
-        ys = [val for val in data[v] if val is not None]
-        ax.plot(xs, ys, marker=MARKERS[v], color=COLORS[v],
-                label=LABELS[v], linewidth=2, markersize=8)
-    if hline is not None:
-        ax.axhline(hline, color="gray", linestyle="--", linewidth=1, alpha=0.5)
+
+def _xs_ys(data, variant, Ns_list):
+    """Extract non-None xs/ys; handles both list and dict formats."""
+    d = data[variant]
+    if isinstance(d, dict):
+        xs = [n for n in Ns_list if n in d and d[n] is not None]
+        ys = [d[n] for n in xs]
+    else:
+        xs = [n for n, v in zip(Ns_list, d) if v is not None]
+        ys = [v for v in d if v is not None]
+    return xs, ys
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Figure 1 — Performance
+# ════════════════════════════════════════════════════════════════════════════
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+fig.suptitle("Task Performance vs. Number of Agents", fontsize=13, fontweight="bold")
+
+core_variants = ["memory_only", "commnet_persistent", "memory_only_persistent"]
+all_variants  = core_variants + ["commnet"]
+
+for ax, data, ylabel, title, hi in [
+    (axes[0], perf_dist, "Median Distance to Landmark", "Final Distance  (↓ better)", False),
+    (axes[1], perf_rew,  "Median Episode Reward",        "Final Reward  (↑ better)",  True),
+]:
+    for v in all_variants:
+        xs, ys = _xs_ys(data, v, Ns)
+        lw  = 1.5 if v == "commnet" else 2.0
+        ls  = "--" if v == "commnet" else "-"
+        ax.plot(xs, ys, marker=MARKERS[v], color=COLORS[v], label=LABELS[v],
+                linewidth=lw, linestyle=ls, markersize=8)
     ax.set_xticks(Ns)
     ax.set_xlabel("Number of Agents (N)", fontsize=10)
     ax.set_ylabel(ylabel, fontsize=10)
     ax.set_title(title, fontsize=11, fontweight="bold")
     ax.grid(True, alpha=0.3)
-    arrow = "↑ better" if higher_better else "↓ better"
-    ax.text(0.98, 0.02, arrow, transform=ax.transAxes,
-            ha="right", va="bottom", fontsize=8, color="gray")
-
-
-# ── Figure 1: Performance ────────────────────────────────────────────────────
-
-fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-fig.suptitle("Task Performance vs. Number of Agents", fontsize=13, fontweight="bold")
-
-plot_metric(axes[0], perf_dist, "Median Distance to Landmark ↓",
-            "Final Distance (lower = better)", higher_better=False)
-plot_metric(axes[1], perf_rew, "Median Episode Reward ↑",
-            "Final Reward (higher = better)", higher_better=True)
 
 handles, labels = axes[0].get_legend_handles_labels()
-fig.legend(handles, labels, loc="lower center", ncol=3, fontsize=9,
-           bbox_to_anchor=(0.5, -0.05))
-plt.tight_layout(rect=[0, 0.08, 1, 1])
-
-out_dir = os.path.join(os.path.dirname(__file__), "../../scaling_analysis")
-os.makedirs(out_dir, exist_ok=True)
+fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=8,
+           bbox_to_anchor=(0.5, -0.06))
+plt.tight_layout(rect=[0, 0.10, 1, 1])
 fig.savefig(os.path.join(out_dir, "fig1_performance.png"), dpi=150, bbox_inches="tight")
 plt.close()
 print("Saved fig1_performance.png")
 
 
-# ── Figure 2: Meme Metrics ───────────────────────────────────────────────────
-
-fig, axes = plt.subplots(2, 3, figsize=(16, 10))
-fig.suptitle("Memetic Dynamics vs. Number of Agents", fontsize=14, fontweight="bold")
-
-plot_metric(axes[0, 0], q1_sil,
-            "Silhouette Score", "Q1: Attractor Clarity\n(do stable patterns form?)",
-            higher_better=True)
-
-plot_metric(axes[0, 1], q2_sim,
-            "Pairwise Cosine Similarity", "Q2: Inter-Agent Convergence\n(do patterns spread?)",
-            higher_better=True)
-
-plot_metric(axes[0, 2], q4_bvar,
-            "Between-Agent Variance (×10⁻⁴)", "Q4: Specialisation\n(diverge vs. homogenise?)",
-            higher_better=True)
-
-plot_metric(axes[1, 0], q5_dsil,
-            "Delta Silhouette", "Q5a: Mutation Structure\n(structured vs. random updates?)",
-            higher_better=True)
-
-plot_metric(axes[1, 1], q5_corr,
-            "Cross-Agent Delta Correlation", "Q5b: Social Coupling\n(do mutations co-occur?)",
-            higher_better=True, hline=0.0)
-
-# Summary radar-style bar chart for N=10 (the clearest signal point)
-ax = axes[1, 2]
-metrics = ["Attractor\nClarity", "Inter-Agent\nConv.", "Specialisation\n(×100)", "Mutation\nStructure", "Social\nCoupling"]
-variants_list = ["memory_only", "commnet_persistent", "memory_only_persistent"]
-n_idx = 1  # N=10
-
-vals = {
-    "memory_only":            [q1_sil["memory_only"][n_idx],
-                               q2_sim["memory_only"][n_idx],
-                               q4_bvar["memory_only"][n_idx] * 100,
-                               q5_dsil["memory_only"][n_idx],
-                               max(0, q5_corr["memory_only"][n_idx])],
-    "commnet_persistent":     [q1_sil["commnet_persistent"][n_idx],
-                               q2_sim["commnet_persistent"][n_idx],
-                               q4_bvar["commnet_persistent"][n_idx] * 100,
-                               q5_dsil["commnet_persistent"][n_idx],
-                               max(0, q5_corr["commnet_persistent"][n_idx])],
-    "memory_only_persistent": [q1_sil["memory_only_persistent"][n_idx],
-                               q2_sim["memory_only_persistent"][n_idx],
-                               q4_bvar["memory_only_persistent"][n_idx] * 100,
-                               q5_dsil["memory_only_persistent"][n_idx],
-                               max(0, q5_corr["memory_only_persistent"][n_idx])],
-}
-x = np.arange(len(metrics))
-width = 0.25
-for i, v in enumerate(variants_list):
-    ax.bar(x + i * width, vals[v], width, label=LABELS[v],
-           color=COLORS[v], alpha=0.85)
-ax.set_xticks(x + width)
-ax.set_xticklabels(metrics, fontsize=8)
-ax.set_title("Summary at N=10\n(all metrics normalised to [0,1] range)", fontsize=11, fontweight="bold")
-ax.set_ylabel("Score", fontsize=10)
-ax.grid(True, alpha=0.3, axis="y")
-
-handles, labels = axes[0, 0].get_legend_handles_labels()
-fig.legend(handles, labels, loc="lower center", ncol=3, fontsize=10,
-           bbox_to_anchor=(0.5, -0.03))
-plt.tight_layout(rect=[0, 0.06, 1, 1])
-fig.savefig(os.path.join(out_dir, "fig2_meme_metrics.png"), dpi=150, bbox_inches="tight")
-plt.close()
-print("Saved fig2_meme_metrics.png")
-
-
-# ── Figure 3: Phase transition highlight ─────────────────────────────────────
-
-fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-fig.suptitle("Phase Transition: Comm Imposes Mutation Structure at N≥10",
+# ════════════════════════════════════════════════════════════════════════════
+# Figure 2 — Null baseline: real sil vs shuffled sil
+# ════════════════════════════════════════════════════════════════════════════
+fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+fig.suptitle("Silhouette Score: Real vs. Shuffled Null Baseline\n"
+             "Real ≈ Null everywhere → hidden-state clusters are GRU geometry artifacts, not memes",
              fontsize=12, fontweight="bold")
 
-# Left: delta_sil with shaded region
+variant_labels = {
+    "memory_only":            "Mem Only",
+    "commnet_persistent":     "CommNet+Persist",
+    "memory_only_persistent": "Mem Persist",
+}
+
+for ax, v in zip(axes, core_variants):
+    xs_r, ys_r = _xs_ys(real_sil, v, Ns)
+    xs_n, ys_n = _xs_ys(null_sil, v, Ns)
+    above = [r - n for r, n in zip(ys_r, ys_n)]
+
+    ax.plot(xs_r, ys_r, marker="o", color=COLORS[v], linewidth=2,
+            markersize=7, label="Real sil")
+    ax.plot(xs_n, ys_n, marker="o", linestyle="--", color="gray", linewidth=1.5,
+            markersize=5, label="Shuffled null")
+    ax.fill_between(xs_r, ys_r, ys_n, alpha=0.15, color=COLORS[v])
+
+    ax2 = ax.twinx()
+    ax2.bar(xs_r, above, width=0.6, alpha=0.25, color=COLORS[v], label="Above null")
+    ax2.axhline(0, color="black", linewidth=0.8, linestyle=":")
+    ax2.set_ylabel("Real − Null", fontsize=8, color="gray")
+    ax2.tick_params(axis="y", labelcolor="gray", labelsize=7)
+    ax2.set_ylim(-0.05, 0.15)
+
+    ax.set_xticks(Ns)
+    ax.set_xlabel("N", fontsize=10)
+    ax.set_ylabel("Silhouette Score", fontsize=10)
+    ax.set_title(variant_labels[v], fontsize=11, fontweight="bold")
+    ax.legend(fontsize=8, loc="upper left")
+    ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+fig.savefig(os.path.join(out_dir, "fig2_null_baseline.png"), dpi=150, bbox_inches="tight")
+plt.close()
+print("Saved fig2_null_baseline.png")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Figure 3 — CommNet collapse + delta sil
+# ════════════════════════════════════════════════════════════════════════════
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+fig.suptitle("Key Findings: CommNet Collapse Without Persistence  &  Delta Silhouette Trends",
+             fontsize=12, fontweight="bold")
+
+# Left: distance highlighting commnet collapse
 ax = axes[0]
-for v in q5_dsil:
-    ax.plot(Ns, q5_dsil[v], marker=MARKERS[v], color=COLORS[v],
-            label=LABELS[v], linewidth=2.5, markersize=10)
-ax.axvspan(9, 11, alpha=0.1, color="orange", label="Phase transition zone")
-ax.axhline(0.9, color="red", linestyle=":", linewidth=1.5, alpha=0.7, label="'Structured' threshold")
+for v in all_variants:
+    xs, ys = _xs_ys(perf_dist, v, Ns)
+    lw = 1.5 if v == "commnet" else 2.0
+    ls = "--" if v == "commnet" else "-"
+    ax.plot(xs, ys, marker=MARKERS[v], color=COLORS[v], label=LABELS[v],
+            linewidth=lw, linestyle=ls, markersize=8)
+ax.set_yscale("log")
+ax.set_xticks(Ns)
+ax.set_xlabel("Number of Agents (N)", fontsize=11)
+ax.set_ylabel("Median Final Distance (log scale)", fontsize=10)
+ax.set_title("CommNet without persistence collapses at N≥5\n(log scale reveals divergence)", fontsize=10)
+ax.legend(fontsize=8)
+ax.grid(True, alpha=0.3, which="both")
+
+# Right: delta silhouette (note: also near null — same caveat applies)
+ax = axes[1]
+for v in core_variants:
+    xs, ys = _xs_ys(q5_dsil, v, Ns)
+    ax.plot(xs, ys, marker=MARKERS[v], color=COLORS[v], label=LABELS[v],
+            linewidth=2, markersize=8)
 ax.set_xticks(Ns)
 ax.set_xlabel("Number of Agents (N)", fontsize=11)
 ax.set_ylabel("Delta Silhouette", fontsize=11)
-ax.set_title("Mutation Structure vs N\ncommnet jumps 0.21→0.98 at N=10", fontsize=10)
-ax.legend(fontsize=8)
-ax.grid(True, alpha=0.3)
-
-# Right: specialisation divergence
-ax = axes[1]
-for v in q4_bvar:
-    xs = [n for n, val in zip(Ns, q4_bvar[v]) if val is not None]
-    vals_scaled = [val * 1e4 for val in q4_bvar[v] if val is not None]
-    ax.plot(xs, vals_scaled, marker=MARKERS[v], color=COLORS[v],
-            label=LABELS[v], linewidth=2.5, markersize=10)
-ax.set_xticks(Ns)
-ax.set_xlabel("Number of Agents (N)", fontsize=11)
-ax.set_ylabel("Between-Agent Variance (×10⁻⁴)", fontsize=11)
-ax.set_title("Agent Specialisation vs N\nmemory_only diverges strongly at N=20", fontsize=10)
+ax.set_title("Q5 Mutation Structure vs N\n(interpret cautiously — null baseline not computed)", fontsize=10)
 ax.legend(fontsize=8)
 ax.grid(True, alpha=0.3)
 
 plt.tight_layout()
-fig.savefig(os.path.join(out_dir, "fig3_phase_transition.png"), dpi=150, bbox_inches="tight")
+fig.savefig(os.path.join(out_dir, "fig3_findings.png"), dpi=150, bbox_inches="tight")
 plt.close()
-print("Saved fig3_phase_transition.png")
+print("Saved fig3_findings.png")
 print(f"\nAll figures saved to: {os.path.abspath(out_dir)}")
