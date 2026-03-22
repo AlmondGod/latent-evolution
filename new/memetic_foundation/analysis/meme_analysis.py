@@ -78,6 +78,55 @@ def stack_h(probes: List[dict]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 # Q1 — PERSISTENCE: attractors and cluster stability
 # ---------------------------------------------------------------------------
 
+def shuffled_sil_baseline(h10: np.ndarray, best_k: int, n_shuffles: int = 10,
+                           rng: np.random.Generator | None = None) -> dict:
+    """Compute silhouette score on row-permuted h10 as a null baseline.
+
+    Shuffling breaks all temporal and agent-identity structure while preserving
+    the marginal distribution of each dimension.  If actual_sil ≈ shuffled_sil,
+    the clusters found by k-means are a GRU geometry artefact rather than
+    evidence of discrete meme-like attractors.
+
+    Args:
+        h10        : (N, d) PCA-reduced hidden states (same array used for clustering)
+        best_k     : number of clusters to use (should match actual clustering)
+        n_shuffles : how many independent shuffles to average over
+        rng        : optional numpy Generator for reproducibility
+
+    Returns dict with keys:
+        shuffled_sil_mean  : mean sil over shuffles
+        shuffled_sil_std   : std  over shuffles
+        actual_minus_null  : best_score − shuffled_sil_mean  (> 0 → genuine structure)
+        ratio              : best_score / shuffled_sil_mean   (> 1 → genuine structure)
+    """
+    if rng is None:
+        rng = np.random.default_rng(0)
+    shuffle_scores = []
+    for _ in range(n_shuffles):
+        h_shuf = h10.copy()
+        # permute rows independently per column (breaks all structure)
+        for col in range(h_shuf.shape[1]):
+            h_shuf[:, col] = rng.permutation(h_shuf[:, col])
+        km = KMeans(n_clusters=best_k, n_init=5, random_state=42)
+        lbl = km.fit_predict(h_shuf)
+        if len(np.unique(lbl)) < 2:
+            continue
+        shuffle_scores.append(
+            silhouette_score(h_shuf, lbl, sample_size=min(5000, len(h_shuf)))
+        )
+    if not shuffle_scores:
+        return {"shuffled_sil_mean": 0.0, "shuffled_sil_std": 0.0,
+                "actual_minus_null": 0.0, "ratio": 1.0}
+    mean_shuf = float(np.mean(shuffle_scores))
+    std_shuf  = float(np.std(shuffle_scores))
+    return {
+        "shuffled_sil_mean": mean_shuf,
+        "shuffled_sil_std":  std_shuf,
+        "actual_minus_null": 0.0,   # filled in by caller who knows best_score
+        "ratio":             0.0,   # filled in by caller
+    }
+
+
 def q1_persistence(probes: List[dict], label: str, out_dir: str) -> dict:
     """PCA + k-means clustering. Track cluster membership over training time."""
     h_all, steps, agents = stack_h(probes)
@@ -100,6 +149,12 @@ def q1_persistence(probes: List[dict], label: str, out_dir: str) -> dict:
 
     km_best = KMeans(n_clusters=best_k, n_init=10, random_state=42)
     cluster_labels = km_best.fit_predict(h10)
+
+    # --- shuffled null baseline ---
+    null = shuffled_sil_baseline(h10, best_k)
+    null["actual_minus_null"] = best_score - null["shuffled_sil_mean"]
+    null["ratio"] = (best_score / null["shuffled_sil_mean"]
+                     if null["shuffled_sil_mean"] > 0 else float("inf"))
 
     # PCA scatter coloured by cluster
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -138,6 +193,10 @@ def q1_persistence(probes: List[dict], label: str, out_dir: str) -> dict:
         per_agent_entropy[a] = float(ent)
 
     return {"best_k": best_k, "silhouette": best_score,
+            "shuffled_sil_mean":  null["shuffled_sil_mean"],
+            "shuffled_sil_std":   null["shuffled_sil_std"],
+            "actual_minus_null":  null["actual_minus_null"],
+            "sil_ratio":          null["ratio"],
             "per_agent_entropy": per_agent_entropy,
             "cluster_labels": cluster_labels, "h10": h10,
             "steps": steps, "agents": agents}

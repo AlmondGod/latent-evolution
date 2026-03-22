@@ -7,7 +7,7 @@ Computes Generalized Advantage Estimation (GAE) returns.
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -24,6 +24,7 @@ class RolloutBuffer:
         self.dones: List[np.ndarray] = []
         self.avail_actions: List[np.ndarray] = []
         self.values: List[np.ndarray] = []
+        self.hidden_states: List[np.ndarray] = []  # (N, mem_dim) per step
 
     def add(
         self,
@@ -35,6 +36,7 @@ class RolloutBuffer:
         dones: np.ndarray,
         avail_actions: np.ndarray,
         values: np.ndarray,
+        hidden_state: Optional[np.ndarray] = None,
     ) -> None:
         self.obs.append(obs)
         self.states.append(state)
@@ -44,6 +46,7 @@ class RolloutBuffer:
         self.dones.append(dones)
         self.avail_actions.append(avail_actions)
         self.values.append(values)
+        self.hidden_states.append(hidden_state)  # None if no memory
 
     def compute_returns(
         self, last_values: np.ndarray, gamma: float, gae_lambda: float
@@ -81,6 +84,7 @@ class RolloutBuffer:
         for lst in [
             self.obs, self.states, self.actions, self.log_probs,
             self.rewards, self.dones, self.avail_actions, self.values,
+            self.hidden_states,
         ]:
             lst.clear()
 

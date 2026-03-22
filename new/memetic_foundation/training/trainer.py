@@ -161,6 +161,7 @@ class MemeticFoundationTrainer:
             actions = step_out["actions"].cpu().numpy()
             log_probs = step_out["log_probs"].cpu().numpy()
             values = values_t.cpu().numpy()
+            h_np = step_out["h"].cpu().numpy() if step_out["h"] is not None else None
 
             reward, terminated, info = self.env.step(actions.tolist())
 
@@ -171,6 +172,7 @@ class MemeticFoundationTrainer:
                 obs_arr,
                 np.tile(state_arr, (self.n_agents, 1)),
                 actions, log_probs, rewards, dones, avail_arr, values,
+                hidden_state=h_np,
             )
 
             self._episode_reward += reward
@@ -402,6 +404,11 @@ class MemeticFoundationTrainer:
         flat_returns = returns.reshape(-1)
         flat_advantages = advantages.reshape(-1)
 
+        # Per-timestep hidden states for accurate shadow GRU in evaluate_actions
+        # Shape: (T, N, mem_dim) if memory is used, else None
+        hs = [h for h in buffer.hidden_states if h is not None]
+        flat_hidden = np.concatenate(hs, axis=0) if hs else None  # (T*N, mem_dim)
+
         flat_advantages = (
             (flat_advantages - flat_advantages.mean())
             / (flat_advantages.std() + 1e-8)
@@ -414,6 +421,8 @@ class MemeticFoundationTrainer:
         avail_t = torch.tensor(flat_avail, dtype=torch.float32, device=self.device)
         returns_t = torch.tensor(flat_returns, dtype=torch.float32, device=self.device)
         adv_t = torch.tensor(flat_advantages, dtype=torch.float32, device=self.device)
+        hidden_t = torch.tensor(flat_hidden, dtype=torch.float32, device=self.device) \
+            if flat_hidden is not None else None
 
         batch_size = obs_t.shape[0]
         mini_batch_size = max(batch_size // self.num_mini_batches, 1)
@@ -430,8 +439,10 @@ class MemeticFoundationTrainer:
                 end = min(start + mini_batch_size, batch_size)
                 idx = indices[start:end]
 
+                h_idx = hidden_t[idx] if hidden_t is not None else None
                 new_lp, entropy, values, aux_loss, norms_dict = self.policy.evaluate_actions(
-                    obs_t[idx], states_t[idx], actions_t[idx], avail_t[idx]
+                    obs_t[idx], states_t[idx], actions_t[idx], avail_t[idx],
+                    hidden_states=h_idx,
                 )
                 
                 # Accumulate norms for logging

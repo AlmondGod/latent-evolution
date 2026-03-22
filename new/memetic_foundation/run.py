@@ -225,7 +225,12 @@ def run_train(args):
     print(f"=== Memetic Foundation Training ({variant}) ===")
     print(f"  Scenario: {args.race} {args.n_units}v{args.n_enemies}")
 
-    device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
+    if torch.cuda.is_available() and not args.cpu:
+        device = "cuda"
+    elif torch.backends.mps.is_available() and not args.cpu:
+        device = "mps"
+    else:
+        device = "cpu"
     print(f"  Device: {device}")
 
     env = create_env(args, render=False)
@@ -433,7 +438,12 @@ def run_eval(args):
     print(f"Loading: {args.load_path}")
     render = getattr(args, 'render', False)
 
-    device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
+    if torch.cuda.is_available() and not args.cpu:
+        device = "cuda"
+    elif torch.backends.mps.is_available() and not args.cpu:
+        device = "mps"
+    else:
+        device = "cpu"
     env = create_env(args, render=render)
     trainer = MemeticFoundationTrainer(
         env=env,

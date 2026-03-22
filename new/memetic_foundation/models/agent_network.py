@@ -437,7 +437,8 @@ class MemeticFoundationAC(nn.Module):
         state: torch.Tensor,
         actions: torch.Tensor,
         avail_actions: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        hidden_states: Optional[torch.Tensor] = None,
+    ) -> tuple:
         """Evaluate stored actions for PPO update with differentiable communication.
 
         The key fix over the previous version: communication is recomputed with
@@ -463,7 +464,12 @@ class MemeticFoundationAC(nn.Module):
         u = self.encode(obs)
         B_total = u.shape[0]
         N = self.n_agents
-        u_group = u[:N]  # (N, enc_dim) — one copy per real agent
+        u_group = u[:N]  # (N, enc_dim) — one copy per real agent (fallback)
+
+        # Use per-timestep hidden states if provided (much better gradient signal).
+        # hidden_states: (B_total, mem_dim) — h captured at each rollout step.
+        # Falls back to end-of-rollout buffer state if not provided.
+        _h_per_step = hidden_states  # (B_total, mem_dim) or None
 
         norms_dict = {
             "memory": 0.0,
@@ -494,14 +500,29 @@ class MemeticFoundationAC(nn.Module):
             norms_dict["memory"] = h.norm().item()
 
             if self.comm_mode == "commnet" and self.comm_mean_proj is not None:
-                # Additive: gru_input = u + proj(mean_h), full gradient path
-                total = h.sum(dim=0, keepdim=True)
-                c = (total - h) / max(N - 1, 1)
-                c_proj = self.comm_mean_proj(c)         # (N, enc_dim)
-                norms_dict["message_in"] = c_proj.norm().item()
-                h_shadow = _shadow_gru(u_group + c_proj, h)
-                norms_dict["memory_delta"] = (h_shadow - h).norm().item()
-                actor_input = torch.cat([u, _tile(h_shadow)], dim=-1)
+                if _h_per_step is not None:
+                    # Per-timestep path: much better gradient signal.
+                    # _h_per_step: (B_total, mem_dim) — h at each step from rollout.
+                    # Reshape to (B_total//N, N, mem_dim) to compute mean-of-others per step.
+                    T = B_total // N
+                    h_t = _h_per_step.view(T, N, -1)           # (T, N, mem_dim)
+                    total = h_t.sum(dim=1, keepdim=True)        # (T, 1, mem_dim)
+                    c = (total - h_t) / max(N - 1, 1)          # (T, N, mem_dim)
+                    c_flat = c.reshape(B_total, -1)             # (B_total, mem_dim)
+                    c_proj = self.comm_mean_proj(c_flat)        # (B_total, enc_dim)
+                    norms_dict["message_in"] = c_proj.norm().item()
+                    h_shadow = _shadow_gru(u + c_proj, _h_per_step)  # (B_total, mem_dim)
+                    norms_dict["memory_delta"] = (h_shadow - _h_per_step).norm().item()
+                    actor_input = torch.cat([u, h_shadow], dim=-1)
+                else:
+                    # Fallback: single shadow step from end-of-rollout h (old behaviour)
+                    total = h.sum(dim=0, keepdim=True)
+                    c = (total - h) / max(N - 1, 1)
+                    c_proj = self.comm_mean_proj(c)
+                    norms_dict["message_in"] = c_proj.norm().item()
+                    h_shadow = _shadow_gru(u_group + c_proj, h)
+                    norms_dict["memory_delta"] = (h_shadow - h).norm().item()
+                    actor_input = torch.cat([u, _tile(h_shadow)], dim=-1)
 
             elif self.comm_mode == "commnet_sep" and self.comm_mean_proj is not None:
                 # GRU sees only u; social meme = mean of others' h → actor
@@ -546,9 +567,14 @@ class MemeticFoundationAC(nn.Module):
 
             else:
                 # Memory only: loss → actor → h_shadow → GRU_cell(u) → encoder
-                h_shadow = _shadow_gru(u_group, h)
-                norms_dict["memory_delta"] = (h_shadow - h).norm().item()
-                actor_input = torch.cat([u, _tile(h_shadow)], dim=-1)
+                if _h_per_step is not None:
+                    h_shadow = _shadow_gru(u, _h_per_step)
+                    norms_dict["memory_delta"] = (h_shadow - _h_per_step).norm().item()
+                    actor_input = torch.cat([u, h_shadow], dim=-1)
+                else:
+                    h_shadow = _shadow_gru(u_group, h)
+                    norms_dict["memory_delta"] = (h_shadow - h).norm().item()
+                    actor_input = torch.cat([u, _tile(h_shadow)], dim=-1)
 
         elif self.comm_mode == "commnet" and self.comm_mean_proj is not None:
             # comm_only commnet: mean of neighbors' u → additive → actor
