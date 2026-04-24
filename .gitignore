@@ -43,3 +43,16 @@ StarCraftII/
 3rdparty/
 SMAC_Maps.zip
 *.SC2Replay
+
+# Data and Media (non-code)
+*.json
+*.npz
+*.npy
+*.csv
+*.mp4
+*.gif
+*.png
+*.jpg
+*.jpeg
+*.log
+*.txt

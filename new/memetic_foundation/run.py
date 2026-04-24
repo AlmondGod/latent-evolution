@@ -39,7 +39,9 @@ from tqdm import tqdm
 
 from .training.env_utils import make_env
 from .training.mpe_wrapper import MPEWrapper
+from .training.rware_wrapper import RWAREWrapper
 from .training.trainer import MemeticFoundationTrainer, plot_training_curves
+from .training.vmas_wrapper import VMASWrapper
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -53,12 +55,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["train", "eval", "test"], default="train")
 
     # Environment
-    parser.add_argument("--env", choices=["smacv2", "mpe"], default="smacv2")
+    parser.add_argument("--env", choices=["smacv2", "mpe", "rware", "vmas"], default="smacv2")
     parser.add_argument("--mpe-scenario", type=str, default="simple_tag_v2",
                         help="MPE scenario to load if --env is mpe")
+    parser.add_argument("--vmas-scenario", choices=["transport", "discovery"], default="transport",
+                        help="VMAS scenario to load if --env is vmas")
     parser.add_argument("--race", choices=["terran", "protoss", "zerg"], default="terran")
     parser.add_argument("--n-units", type=int, default=5)
     parser.add_argument("--n-enemies", type=int, default=5)
+    parser.add_argument("--rware-rows", type=int, default=2)
+    parser.add_argument("--rware-cols", type=int, default=3)
+    parser.add_argument("--rware-height", type=int, default=8)
+    parser.add_argument("--rware-requests", type=int, default=2,
+                        help="Fixed request queue size for RWARE.")
+    parser.add_argument("--rware-sensor-range", type=int, default=1)
+    parser.add_argument("--vmas-packages", type=int, default=1,
+                        help="Fixed package count for VMAS transport.")
+    parser.add_argument("--vmas-targets", type=int, default=4,
+                        help="Fixed target count for VMAS discovery.")
+    parser.add_argument("--vmas-agents-per-target", type=int, default=1)
+    parser.add_argument("--vmas-targets-respawn", action="store_true",
+                        help="Respawn targets in VMAS discovery. Leave off for fixed workload.")
 
     # Architecture
     parser.add_argument("--hidden-dim", type=int, default=128)
@@ -184,13 +201,35 @@ def create_env(args, render=False):
             )
         else:
             raise NotImplementedError(f"MPE scenario {args.mpe_scenario} not supported yet.")
+    elif args.env == "rware":
+        return RWAREWrapper(
+            n_agents=args.n_units,
+            shelf_rows=args.rware_rows,
+            shelf_columns=args.rware_cols,
+            column_height=args.rware_height,
+            request_queue_size=args.rware_requests,
+            sensor_range=args.rware_sensor_range,
+            max_steps=args.rollout_steps if hasattr(args, "rollout_steps") else 100,
+            reward_type="global",
+        )
+    elif args.env == "vmas":
+        return VMASWrapper(
+            scenario_name=args.vmas_scenario,
+            n_agents=args.n_units,
+            max_steps=args.rollout_steps if hasattr(args, "rollout_steps") else 100,
+            n_packages=args.vmas_packages,
+            n_targets=args.vmas_targets,
+            agents_per_target=args.vmas_agents_per_target,
+            targets_respawn=args.vmas_targets_respawn,
+            shared_reward=True,
+        )
     else:
         return make_env(args.race, args.n_units, args.n_enemies, render=render)
 
 
 def run_test(args):
     """Quick smoke test with random agents."""
-    print(f"=== Smoke Test: {args.race} {args.n_units}v{args.n_enemies} ===")
+    print(f"=== Smoke Test: env={args.env}, n_agents={args.n_units} ===")
     env = create_env(args, render=getattr(args, 'render', False))
     env_info = env.get_env_info()
     print(f"  n_agents:    {env_info['n_agents']}")
@@ -212,8 +251,19 @@ def run_test(args):
             reward, terminated, info = env.step(actions)
             ep_reward += reward
             step += 1
-        won = info.get("battle_won", False)
-        print(f"  Episode {ep+1}: reward={ep_reward:.2f}, steps={step}, won={won}")
+        extra = []
+        if "battle_won" in info:
+            extra.append(f"won={info['battle_won']}")
+        if "success" in info:
+            extra.append(f"success={info['success']}")
+        if "mean_goal_dist" in info:
+            extra.append(f"goal_dist={info['mean_goal_dist']:.3f}")
+        if "targets_covered" in info:
+            extra.append(f"targets_covered={info['targets_covered']:.1f}")
+        if "deliveries_proxy" in info:
+            extra.append(f"deliveries_proxy={info['deliveries_proxy']:.2f}")
+        suffix = (", " + ", ".join(extra)) if extra else ""
+        print(f"  Episode {ep+1}: reward={ep_reward:.2f}, steps={step}{suffix}")
 
     env.close()
     print("Smoke test passed!")
@@ -223,7 +273,15 @@ def run_train(args):
     """Training loop."""
     variant = get_variant_name(args)
     print(f"=== Memetic Foundation Training ({variant}) ===")
-    print(f"  Scenario: {args.race} {args.n_units}v{args.n_enemies}")
+    if args.env == "smacv2":
+        scenario = f"{args.race} {args.n_units}v{args.n_enemies}"
+    elif args.env == "mpe":
+        scenario = f"{args.mpe_scenario} n={args.n_adversaries}"
+    elif args.env == "rware":
+        scenario = f"rware {args.rware_rows}x{args.rware_cols} req={args.rware_requests} n={args.n_units}"
+    else:
+        scenario = f"vmas {args.vmas_scenario} n={args.n_units}"
+    print(f"  Scenario: {scenario}")
 
     if torch.cuda.is_available() and not args.cpu:
         device = "cuda"

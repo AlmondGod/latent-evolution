@@ -1,0 +1,57 @@
+\subsection{Ablations on Memory and Low-rank updates}
+
+\paragraph{Persistent memory helps scalability.} On partial-observation MPE simple\_spread, the memory-only variant is the most stable option as team size grows. It keeps final mean coverage distance low at every tested $N$ ($0.678 \pm 0.059$, $0.695 \pm 0.180$, $0.613 \pm 0.065$ at $N=3,5,8$; $n=6$ each), whereas the memory-free baseline rises to $9.815 \pm 9.203$, $16.325 \pm 12.717$, and $13.425 \pm 12.945$. The SGD-trained memory+communication variant is less stable still, reaching $10.225 \pm 9.575$, $38.275 \pm 16.793$, and $26.127 \pm 23.589$ ($n=6,6,3$). Final rewards show the same pattern: memory-only stays between $-646.90 \pm 31.55$ and $-1200.81 \pm 80.29$, while the baseline and memory+communication variants are both worse and far more variable.
+
+\paragraph{Improved wall-clock behavior shows for ALEC relative to matched RL adaptation.} On a single Apple M3 Pro MacBook Pro (12 CPU cores, 36\,GB unified memory; CPU execution), ALEC is faster overall than matched RL adaptation, though not in every VMAS Transport setting. Across the 27 paired phase-2 runs in the current artifact set, ALEC averaged $3601.0 \pm 654.6$ seconds versus $4493.5 \pm 599.0$ for RL, and ALEC finished faster in 22/27 pairings.
+
+\paragraph{Low-rank state updates appear slightly better and more stable than dense alternatives.} On VMAS Discovery at $N=12$, the standard low-rank $z$ update achieves reward gain $+0.0885 \pm 0.0138$ and improves in 3/3 seeds, compared with $+0.0755 \pm 0.0478$ and 2/3 seeds for dense updates, and $+0.0547 \pm 0.0430$ and 2/3 seeds with $z$ disabled. The low-rank variant is also materially cheaper wall-clock.
+
+\begin{table}[t]
+\centering
+\caption{Partial-observation MPE simple\_spread scaling ablation. Values are mean $\pm$ standard error over seeds; lower mean\_dist is better. The final column reports seeds as baseline / memory-only / memory+communication. The memory+communication row at $N=8$ uses 3 seeds; all other entries use 6.}
+\label{tab:mpe_memory_scaling_ablation}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccccccc}
+\toprule
+$N$ & Baseline Reward & Memory-Only Reward & Memory+Comm Reward & Baseline mean\_dist & Memory-Only mean\_dist & Memory+Comm mean\_dist & Seeds \\
+\midrule
+3 & $-3257.73 \pm 2634.42$ & $-646.89 \pm 31.55$ & $-3997.40 \pm 3371.98$ & $9.815 \pm 9.203$ & $0.678 \pm 0.059$ & $10.225 \pm 9.575$ & 6/6/6 \\
+5 & $-8577.72 \pm 6199.96$ & $-868.27 \pm 158.39$ & $-18768.44 \pm 7951.74$ & $16.325 \pm 12.717$ & $0.695 \pm 0.180$ & $38.275 \pm 16.793$ & 6/6/6 \\
+8 & $-11124.43 \pm 10070.12$ & $-1200.81 \pm 80.29$ & $-21864.15 \pm 18150.99$ & $13.425 \pm 12.945$ & $0.613 \pm 0.065$ & $26.127 \pm 23.589$ & 6/6/3 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Matched phase-2 wall-clock by domain. Values are mean $\pm$ standard error in seconds over paired runs on a single Apple M3 Pro MacBook Pro (12 CPU cores, 36\,GB unified memory) using CPU execution.}
+\label{tab:phase2_wallclock_ablation}
+\begin{tabular}{lcccc}
+\toprule
+Setting & ALEC Time (s) & MAPPO Time (s) & Pairs & ALEC Faster \\
+\midrule
+MPE & $1156.0 \pm 6.5$ & $1312.9 \pm 17.0$ & 3 & 3/3 \\
+VMAS Discovery & $2792.0 \pm 478.8$ & $5359.0 \pm 1127.6$ & 12 & 12/12 \\
+VMAS Transport & $5021.4 \pm 1292.5$ & $4423.2 \pm 581.4$ & 12 & 7/12 \\
+Overall & $3601.0 \pm 654.6$ & $4493.5 \pm 599.0$ & 27 & 22/27 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{VMAS Discovery $N=12$ state-update ablation for ALEC. Values are mean $\pm$ standard error over seeds.}
+\label{tab:vmas_lowrank_ablation}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcccccc}
+\toprule
+Variant & Baseline Reward & Final Reward & Reward Gain & Time (s) & Improved & Seeds \\
+\midrule
+with $z$, low-rank update & $1.4792 \pm 0.0114$ & $1.5677 \pm 0.0213$ & $0.0885 \pm 0.0138$ & $5267.8 \pm 170.8$ & 3/3 & 3 \\
+without $z$ & $1.5078 \pm 0.0798$ & $1.5625 \pm 0.0413$ & $0.0547 \pm 0.0430$ & $7920.8 \pm 1026.8$ & 2/3 & 3 \\
+with $z$, dense update & $1.5234 \pm 0.0502$ & $1.5990 \pm 0.0026$ & $0.0755 \pm 0.0478$ & $16163.8 \pm 634.0$ & 2/3 & 3 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}

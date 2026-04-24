@@ -132,8 +132,31 @@ class FrozenAttentionHUActorBackbone(nn.Module):
     def encode(self, obs: torch.Tensor) -> torch.Tensor:
         return self.encoder(obs)
 
+    def detach_memory(self) -> None:
+        self.memory.detach_state()
+
+    def get_value(self, state: torch.Tensor) -> torch.Tensor:
+        return self.critic(state)
+
     def _base_comm_tensors(self, h: torch.Tensor, u: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.attn_comm_hu.query(h), self.attn_comm_hu.key(u), self.attn_comm_hu.value(u)
+
+    def scale_comm(self, c: torch.Tensor) -> torch.Tensor:
+        return self._rms_normalize(c) * torch.sigmoid(self.comm_scale_logit)
+
+    def actor_logits_from_parts(
+        self,
+        u: torch.Tensor,
+        h: torch.Tensor,
+        c: torch.Tensor,
+        avail_actions: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        c_scaled = self.scale_comm(c)
+        actor_input = torch.cat([u, h, c_scaled], dim=-1)
+        logits = self.actor(actor_input)
+        if avail_actions is not None:
+            logits = logits.masked_fill(avail_actions == 0, -1e10)
+        return logits
 
     def step_with_adapter(
         self,
@@ -144,6 +167,7 @@ class FrozenAttentionHUActorBackbone(nn.Module):
         deterministic: bool = True,
         intervene_comm_silence: bool = False,
         intervene_comm_shift: bool = False,
+        return_diagnostics: bool = False,
     ) -> dict[str, torch.Tensor]:
         u = self.encode(obs)
         h = self.memory.step(u)
@@ -152,22 +176,22 @@ class FrozenAttentionHUActorBackbone(nn.Module):
             if z is None:
                 z = adapter.initial_state(n_agents=u.shape[0], device=u.device)
             q_base, k_base, v_base = self._base_comm_tensors(h, u)
-            q = q_base + adapter.q_delta(torch.cat([h, z], dim=-1))
+            q = q_base + adapter.q_delta(adapter.q_features(h, z))
             k = k_base + adapter.k_delta(u)
             v = v_base + adapter.v_delta(u)
-            scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.attn_dim)
-            mask = torch.eye(scores.shape[-1], device=scores.device, dtype=torch.bool)
-            scores = scores.masked_fill(mask, float("-inf"))
+            raw_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.attn_dim)
+            mask = torch.eye(raw_scores.shape[-1], device=raw_scores.device, dtype=torch.bool)
+            scores = raw_scores.masked_fill(mask, float("-inf"))
             comm_attn = torch.softmax(scores, dim=-1)
             comm_attn = torch.nan_to_num(comm_attn, nan=0.0)
             c_latent = torch.matmul(comm_attn, v)
             c = self.attn_comm_hu.out_proj(c_latent) + adapter.o_delta(c_latent)
-            z_next = adapter.state_cell(z=z, h=h, c=c)
+            z_next = adapter.next_state(z=z, h=h, c=c)
         else:
             q, k, v = self._base_comm_tensors(h, u)
-            scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.attn_dim)
-            mask = torch.eye(scores.shape[-1], device=scores.device, dtype=torch.bool)
-            scores = scores.masked_fill(mask, float("-inf"))
+            raw_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.attn_dim)
+            mask = torch.eye(raw_scores.shape[-1], device=raw_scores.device, dtype=torch.bool)
+            scores = raw_scores.masked_fill(mask, float("-inf"))
             comm_attn = torch.softmax(scores, dim=-1)
             comm_attn = torch.nan_to_num(comm_attn, nan=0.0)
             c_latent = torch.matmul(comm_attn, v)
@@ -179,25 +203,35 @@ class FrozenAttentionHUActorBackbone(nn.Module):
         if intervene_comm_silence:
             c = torch.zeros_like(c)
 
-        c_scaled = self._rms_normalize(c) * torch.sigmoid(self.comm_scale_logit)
-        actor_input = torch.cat([u, h, c_scaled], dim=-1)
-        logits = self.actor(actor_input)
-        if avail_actions is not None:
-            logits = logits.masked_fill(avail_actions == 0, -1e10)
+        logits = self.actor_logits_from_parts(u=u, h=h, c=c, avail_actions=avail_actions)
+        c_scaled = self.scale_comm(c)
 
         dist = Categorical(logits=logits)
         actions = torch.argmax(logits, dim=-1) if deterministic else dist.sample()
         log_probs = dist.log_prob(actions)
         self.last_comm_attn = comm_attn.detach()
 
-        return {
+        out = {
             "u": u,
             "h": h,
             "z": z,
             "z_next": z_next,
+            "c_unscaled": c,
             "c": c_scaled,
             "actions": actions,
             "log_probs": log_probs,
             "logits": logits,
             "comm_attn": comm_attn,
         }
+        if return_diagnostics:
+            out.update(
+                {
+                    "q": q,
+                    "k": k,
+                    "v": v,
+                    "raw_scores": raw_scores,
+                    "masked_scores": scores,
+                    "c_latent": c_latent,
+                }
+            )
+        return out

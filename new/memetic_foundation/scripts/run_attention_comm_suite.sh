@@ -60,7 +60,7 @@ run_batch() {
 
     for SEED in $(seq $SEED_START $SEED_END); do
         LOG="$SAVE_DIR/${LABEL}_seed${SEED}.log"
-        python3.9 -m new.memetic_foundation.run --mode train \
+        /opt/homebrew/bin/python3.9 -m new.memetic_foundation.run --mode train \
             --env "$ENV" \
             --mpe-scenario "$SCENARIO" \
             --total-steps "$TOTAL_STEPS" \

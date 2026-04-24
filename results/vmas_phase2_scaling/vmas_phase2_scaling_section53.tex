@@ -1,0 +1,43 @@
+\subsection{ALEC Scaling in VMAS}
+
+\paragraph{Experimental Setup} We evaluate post-training adaptation in VMAS Discovery and Transport across three seeds at team sizes $N \in \{2,4,8,12\}$. A backbone is trained first, after which either ALEC or MAPPO is used for phase-2 adaptation under the same budget.
+
+\paragraph{VMAS Discovery shows positive gains for both methods, with ALEC slightly stronger at larger team sizes.} Reward gain over each method's paired frozen checkpoint is positive for both methods at all tested $N$. In VMAS Discovery, ALEC is slightly stronger at $N=4$ ($+0.1484$ vs.\ $+0.0911$), $N=8$ ($+0.1198$ vs.\ $+0.1068$), and $N=12$ ($+0.0885$ vs.\ $+0.0859$), while MAPPO is stronger only at $N=2$ ($+0.1198$ vs.\ $+0.0469$). VMAS Transport is noisier: ALEC is better at $N=2$ ($+0.0803$ vs.\ $+0.0463$), $N=4$ ($+0.4376$ vs.\ $+0.2932$), and $N=12$ ($+0.5993$ vs.\ $+0.4938$), while MAPPO is slightly better at $N=8$ ($+0.4225$ vs.\ $+0.3383$).
+
+\begin{table}[t]
+\centering
+\caption{VMAS Discovery mean reward by team size $N$. For each method, the paired frozen checkpoint mean is reported alongside the phase-2 adapted mean. Values are mean $\pm$ standard error; the final column reports the seed count.}
+\label{tab:vmas_discovery_rewards}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+$N$ & ALEC Base & ALEC & MAPPO Base & MAPPO & Seeds \\
+\midrule
+2 & $0.5443 \pm 0.1134$ & $0.5911 \pm 0.0290$ & $0.5000 \pm 0.0597$ & $0.6198 \pm 0.1090$ & 3 \\
+4 & $0.7630 \pm 0.0104$ & $0.9115 \pm 0.0104$ & $0.7760 \pm 0.0248$ & $0.8672 \pm 0.0325$ & 3 \\
+8 & $1.2396 \pm 0.0648$ & $1.3594 \pm 0.0430$ & $1.2839 \pm 0.0456$ & $1.3906 \pm 0.0835$ & 3 \\
+12 & $1.4792 \pm 0.0114$ & $1.5677 \pm 0.0213$ & $1.4661 \pm 0.0293$ & $1.5521 \pm 0.0094$ & 3 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\subsection{VMAS Scaling Transport Results}
+
+\begin{table}[t]
+\centering
+\caption{VMAS Transport mean reward by team size $N$. For each method, the paired frozen checkpoint mean is reported alongside the phase-2 adapted mean. Values are mean $\pm$ standard error; the final column reports the seed count.}
+\label{tab:vmas_transport_rewards}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+$N$ & ALEC Base & ALEC & MAPPO Base & MAPPO & Seeds \\
+\midrule
+2 & $-0.0319 \pm 0.0302$ & $0.0484 \pm 0.0382$ & $0.0059 \pm 0.0092$ & $0.0522 \pm 0.0341$ & 3 \\
+4 & $-0.3133 \pm 0.0645$ & $0.1243 \pm 0.0342$ & $-0.2018 \pm 0.1987$ & $0.0914 \pm 0.0355$ & 3 \\
+8 & $0.0837 \pm 0.1550$ & $0.4220 \pm 0.1246$ & $0.0548 \pm 0.0628$ & $0.4773 \pm 0.1987$ & 3 \\
+12 & $-0.4621 \pm 0.4255$ & $0.1371 \pm 0.1550$ & $-0.2727 \pm 0.1599$ & $0.2211 \pm 0.2738$ & 3 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}

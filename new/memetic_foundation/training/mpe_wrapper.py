@@ -100,8 +100,16 @@ class MPEWrapper:
             "episode_limit": self.max_cycles,
         }
 
-    def reset(self):
-        res = self.env.reset()
+    def reset(self, seed=None):
+        if seed is None:
+            res = self.env.reset()
+        else:
+            seed = int(seed)
+            np.random.seed(seed)
+            try:
+                res = self.env.reset(seed=seed)
+            except TypeError:
+                res = self.env.reset()
         if isinstance(res, tuple):
             self.last_obs = res[0]
         else:
