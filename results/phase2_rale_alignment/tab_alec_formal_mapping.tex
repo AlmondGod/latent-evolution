@@ -1,0 +1,31 @@
+% Requires: \usepackage{booktabs, amsmath, amssymb}
+% Optional:  \usepackage{url} if you use \url{...} for file names
+
+\begin{table}[t]
+\centering
+\small
+\caption{Mapping from the formal memetic framework to ALEC (phase~2, frozen MAPPO backbone). The learned object is the adapter genotype~$\phi$; post-hoc RALE analysis discretizes~$z$ to compare~$F$ and~$R$ on the induced rollouts.}
+\label{tab:alec_formal_mapping}
+\begin{tabular}{p{0.26\linewidth}p{0.66\linewidth}}
+\toprule
+Formal object & ALEC implementation \\
+\midrule
+Meme state $s_i$ &
+At run time each agent has a \emph{continuous} memetic state $z_i^t\in\mathbb{R}^{d_z}$ from the \texttt{MemeticStateCell}, with cross-agent message context~$c_i^t$; the adapter is stacked on a frozen \texttt{FrozenAttentionHUActorBackbone} checkpoint.
+For RALE, discrete labels~$s_i^t$ are \emph{post-hoc}---$k$-means on logged~$z_i^t$ (with optional~$[z;c]$ in control experiments)---so the formal discrete meme index~$k$ is the cluster id, not an output head of the policy. \\[0.35em]
+Population frequency $x_i$ / $x_k$ &
+$x_k$ is the fraction of agent--steps in cluster~$k$ on evaluation rollouts under a \emph{fixed} trained adapter, $x_k=\frac{1}{M}\sum_i\mathbf{1}[s_i^t{=}k]$.
+This is the measured analogue of type frequency, not a quantity differentiated inside~ES. \\[0.35em]
+Host fitness $F_i$ / $F_k$ &
+Outer-loop ES fitness is scalar return (mean per-episode reward, with optional comm-gain terms in the selection script). For the RALE table, $F_k=\mathbb{E}[Y_i^t\mid s_i^t{=}k]$ with~$Y_i^t$ a short-horizon host target, e.g.\ the sum of the next~$H$ per-step rewards on the same $(\text{episode},\text{agent})$ trajectory. \\[0.35em]
+Replicative fitness $R_i$ / $R_k$ &
+In RALE, $R_j=\frac{1}{x_j}\sum_k x_k F_k Q_{kj}$: replication-weighted fitness from the empirical cluster--conditional~$F$ and the \emph{empirical} one-step matrix~$Q$ on discretized~$s$; it is not an extra parametric~``reproduction'' head. \\[0.35em]
+Transmission / dynamics (two meanings of~$Q$) &
+\emph{Learned dynamics:} low-rank deltas $(\Delta_Q,\Delta_K,\Delta_V,\Delta_O)$ on the communication Q/K/V/O paths and the gated state update $z_{t+1}{=}f(z_t,h_t,c_t)$ in the adapter.
+\emph{Empirical RALE $Q_{kj}$:} $\Pr(s^{t+1}{=}j\mid s^t{=}k)$ on the same discretized trajectories, used only to build~$R$; do not identify this with the neural attention~Q--projection weights. \\[0.35em]
+Meta-level mutation (algorithmic) &
+OpenAIES on the flattened adapter: $\phi'=\phi+\sigma\epsilon$, \emph{antithetic} sampling, gradient from centered rank transform of population fitness, learning rate~$\eta$.
+The phase-2 runner can optionally re-evaluate top candidates and keep an elite archive; that outer loop over~$\phi$ is not the in-episode $z$~update. \\
+\bottomrule
+\end{tabular}
+\end{table}

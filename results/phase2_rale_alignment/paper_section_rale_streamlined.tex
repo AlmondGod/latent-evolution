@@ -1,0 +1,111 @@
+% =====================================================================
+% Streamlined RALE alignment (SMACv2 warm). Requires booktabs, amsmath.
+% Tabular blocks below: regenerate numbers via
+%   python3 new/memetic_foundation/scripts/export_rale_paper_tables.py
+% then copy \begin{tabular}...\end{tabular} from
+%   rale_table_per_seed_method.tex
+%   rale_table_per_method_pooled.tex
+% =====================================================================
+
+\subsection{Meme-level $F$--$R$ alignment (per-run clustering)}
+\label{sec:rale-per-seed}
+
+\paragraph{Setup (short).}
+After phase-2 training we log $(z_t,z_{t+1},r_t)$ in $25$ deterministic evaluation episodes per seed (3 seeds, Terran, warm-init MAPPO).
+We discretize $z$ with $k$-means with $K\in\{8,12,\dots,128\}$ fitted \emph{separately} for each (method, seed) pair, then estimate cluster occupancy~$x_k$, host fitness $F_k=\mathbb{E}[Y\mid s^t{=}k]$, one-step~$Q$, and replication weighting $R$ as in the main text.
+Concretely, each agent-step is labeled $s_i^t$ by nearest k-means centroid in~$z_t$; $x_k$ is the fraction of such labels equal to~$k$; the host-fitness target $Y_i^t$ is the sum of the next~$H{=}10$ per-step rewards along the same $(\text{episode},\text{agent})$ trajectory; $Q_{kj}$ is the empirical frequency of $s_i^{t+1}{=}j$ among non-terminal steps with $s_i^t{=}k$; and $R_j{=}\frac{1}{x_j}\sum_k x_k F_k Q_{kj}$.
+Subscripts $^{\mathrm{AL}}$ and $^{\mathrm{MP}}$ denote ALEC and warm MAPPO.
+
+\paragraph{Metrics.}
+\emph{Weighted Spearman} $\rho_w(F,R)$: rank correlation between vectors $(F_k)$ and $(R_k)$ with weights~$(x_k)$, measuring whether higher-host-fitness clusters also rank higher in replication weighting~$R$.
+\emph{Isotonic mismatch} $A_{\mathrm{iso}}=\sum_k x_k\bigl(R_k-\phi(F_k)\bigr)^2$ where~$\phi$ is the isotonic (monotone) regression of~$R$ on~$F$ with weights~$x_k$; $A_{\mathrm{iso}}=0$ iff~$F\mapsto R$ is weakly monotone across kept clusters, and larger values indicate systematic non-monotonicity.
+\emph{Shuffle null:} we permute the per-step target~$Y$ across agent-steps, recompute~$F$ and~$R$ with fixed~$(s^t,s^{t+1})$, and average~$\rho_w$ over $50$ shuffles; $\Delta\rho_w\equiv \rho_w-\rho_w^{\mathrm{shuf}}$ is the gap above this structural baseline (tight~$Q$ and geometry can make both numbers large, so~$\Delta\rho_w$ is the more informative alignment signal for comparing methods).
+
+\begin{table}[t]
+\centering
+\small
+\caption{Per-(method, seed) $k$-means, SMACv2 Terran. Means over $3$ seeds; $\Delta\rho_w$ in same units. $K$ is the requested cluster count (some bins may be dropped if occupancy~$<0.5\%$ at large~$K$).}
+\label{tab:rale-per-seed}
+\begin{tabular}{cccccccc}
+\toprule
+$N$v$4$ & $K$ & $\rho_w^{\mathrm{AL}}$ & $\Delta\rho_w^{\mathrm{AL}}$ & $A_{\mathrm{iso}}^{\mathrm{AL}}$ & $\rho_w^{\mathrm{MP}}$ & $\Delta\rho_w^{\mathrm{MP}}$ & $A_{\mathrm{iso}}^{\mathrm{MP}}$ \\
+\midrule
+2 & 8 & $0.800$ & $+0.19$ & $0.039$ & $0.864$ & $+0.46$ & $0.075$ \\
+2 & 12 & $0.886$ & $+0.19$ & $0.029$ & $0.879$ & $+0.35$ & $0.074$ \\
+2 & 16 & $0.904$ & $+0.18$ & $0.030$ & $0.882$ & $+0.30$ & $0.072$ \\
+2 & 20 & $0.884$ & $+0.14$ & $0.034$ & $0.851$ & $+0.22$ & $0.081$ \\
+2 & 24 & $0.883$ & $+0.12$ & $0.032$ & $0.853$ & $+0.22$ & $0.086$ \\
+2 & 32 & $0.877$ & $+0.10$ & $0.035$ & $0.866$ & $+0.20$ & $0.082$ \\
+2 & 64 & $0.879$ & $+0.07$ & $0.036$ & $0.878$ & $+0.18$ & $0.082$ \\
+2 & 128 & $0.877$ & $+0.05$ & $0.036$ & $0.869$ & $+0.23$ & $0.074$ \\
+\midrule
+4 & 8 & $0.907$ & $+0.32$ & $0.110$ & $0.920$ & $+0.41$ & $0.062$ \\
+4 & 12 & $0.908$ & $+0.22$ & $0.115$ & $0.931$ & $+0.31$ & $0.054$ \\
+4 & 16 & $0.935$ & $+0.20$ & $0.104$ & $0.939$ & $+0.24$ & $0.095$ \\
+4 & 20 & $0.926$ & $+0.18$ & $0.113$ & $0.948$ & $+0.23$ & $0.100$ \\
+4 & 24 & $0.935$ & $+0.14$ & $0.116$ & $0.945$ & $+0.18$ & $0.111$ \\
+4 & 32 & $0.932$ & $+0.12$ & $0.125$ & $0.942$ & $+0.16$ & $0.113$ \\
+4 & 64 & $0.941$ & $+0.09$ & $0.110$ & $0.957$ & $+0.15$ & $0.108$ \\
+4 & 128 & $0.942$ & $+0.07$ & $0.107$ & $0.944$ & $+0.14$ & $0.118$ \\
+\midrule
+8 & 8 & $0.961$ & $+0.59$ & $0.145$ & $0.855$ & $+0.68$ & $0.084$ \\
+8 & 12 & $0.955$ & $+0.43$ & $0.137$ & $0.888$ & $+0.58$ & $0.084$ \\
+8 & 16 & $0.959$ & $+0.37$ & $0.157$ & $0.908$ & $+0.58$ & $0.084$ \\
+8 & 20 & $0.970$ & $+0.35$ & $0.138$ & $0.907$ & $+0.50$ & $0.082$ \\
+8 & 24 & $0.968$ & $+0.32$ & $0.177$ & $0.921$ & $+0.52$ & $0.086$ \\
+8 & 32 & $0.971$ & $+0.29$ & $0.186$ & $0.936$ & $+0.49$ & $0.124$ \\
+8 & 64 & $0.975$ & $+0.23$ & $0.238$ & $0.930$ & $+0.42$ & $0.247$ \\
+8 & 128 & $0.965$ & $+0.20$ & $0.304$ & $0.935$ & $+0.41$ & $0.282$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{What we see (per-seed).}
+In Table~\ref{tab:rale-per-seed}, both methods achieve high~$\rho_w$ across~$K$ and team sizes, but~$\Delta\rho_w$ (above shuffle) more often favours warm MAPPO while~$A_{\mathrm{iso}}$ is typically lower (better) for ALEC at~$N{=}2$ and more mixed for $N{=}4$ and~$8$; at very large~$K$ the partition is an over-segmentation of~$z$ and~$A_{\mathrm{iso}}$ can grow, so~$K$ is a resolution choice, not a unique meme count.
+We do not see a clear overall winner on all three of~$\rho_w$,~$\Delta\rho_w$, and~$A_{\mathrm{iso}}$, so we report the tables as evidence that \emph{both} phase-2 adapters yield reward-linked meme statistics under a fair per-run codebook, with differences concentrated in shuffle-corrected rank alignment and small-team isotonicity.
+
+\subsection{Ablation: pooled-seed, per-method clustering}
+\label{sec:rale-per-method}
+
+\paragraph{What changes.}
+Instead of a fresh $k$-means for every seed, we fit \emph{one} codebook per method by pooling (subsampled) $z$ from all $3$ seeds, then assign every probe. This matches cluster identities across seeds within a method, but can interact badly with differing latent scales between ALEC and a narrow MAPPO cloud if one later pooled across methods (we do \emph{not} do that here).
+The columns \textsf{val AL} / \textsf{val MP} are $n_{\mathrm{valid}}/n_{\mathrm{total}}$ seeds for which $\rho_w$ and $A_{\mathrm{iso}}$ are defined (need $\ge3$ kept clusters with sufficient mass).
+
+\begin{table}[t]
+\centering
+\small
+\caption{Same metrics as Table~\ref{tab:rale-per-seed} with $k$-means on \textbf{pooled} $z$ per method (ALEC vs.\ MAPPO). Compare to Table~\ref{tab:rale-per-seed} to see how much conclusions depend on cluster scope.}
+\label{tab:rale-per-method}
+\begin{tabular}{cccccccccc}
+\toprule
+$N$v$4$ & $K$ & val AL & val MP & $\rho_w^{\mathrm{AL}}$ & $\Delta\rho_w^{\mathrm{AL}}$ & $A_{\mathrm{iso}}^{\mathrm{AL}}$ & $\rho_w^{\mathrm{MP}}$ & $\Delta\rho_w^{\mathrm{MP}}$ & $A_{\mathrm{iso}}^{\mathrm{MP}}$ \\
+\midrule
+2 & 8 & 3/3 & 3/3 & $0.863$ & $+0.54$ & $0.023$ & $0.164$ & $+0.24$ & $0.082$ \\
+2 & 12 & 3/3 & 3/3 & $0.862$ & $+0.45$ & $0.031$ & $0.773$ & $+0.56$ & $0.066$ \\
+2 & 16 & 3/3 & 3/3 & $0.744$ & $+0.25$ & $0.030$ & $0.785$ & $+0.49$ & $0.075$ \\
+2 & 20 & 3/3 & 3/3 & $0.855$ & $+0.25$ & $0.029$ & $0.813$ & $+0.42$ & $0.076$ \\
+2 & 24 & 3/3 & 3/3 & $0.859$ & $+0.32$ & $0.028$ & $0.836$ & $+0.38$ & $0.081$ \\
+2 & 32 & 3/3 & 3/3 & $0.878$ & $+0.22$ & $0.032$ & $0.872$ & $+0.37$ & $0.073$ \\
+2 & 64 & 3/3 & 3/3 & $0.895$ & $+0.16$ & $0.031$ & $0.887$ & $+0.27$ & $0.077$ \\
+2 & 128 & 3/3 & 3/3 & $0.887$ & $+0.07$ & $0.033$ & $0.868$ & $+0.20$ & $0.081$ \\
+\midrule
+4 & 8 & 2/3 & 3/3 & $0.966$ & $+0.60$ & $0.039$ & $0.896$ & $+0.64$ & $0.034$ \\
+4 & 12 & 3/3 & 3/3 & $0.767$ & $+0.25$ & $0.055$ & $0.922$ & $+0.65$ & $0.024$ \\
+4 & 16 & 3/3 & 3/3 & $0.799$ & $+0.27$ & $0.098$ & $0.949$ & $+0.58$ & $0.057$ \\
+4 & 20 & 3/3 & 3/3 & $0.955$ & $+0.47$ & $0.073$ & $0.814$ & $+0.32$ & $0.063$ \\
+4 & 24 & 3/3 & 3/3 & $0.950$ & $+0.46$ & $0.096$ & $0.898$ & $+0.32$ & $0.062$ \\
+4 & 32 & 3/3 & 3/3 & $0.919$ & $+0.36$ & $0.106$ & $0.872$ & $+0.21$ & $0.059$ \\
+4 & 64 & 3/3 & 3/3 & $0.909$ & $+0.19$ & $0.112$ & $0.940$ & $+0.22$ & $0.103$ \\
+4 & 128 & 3/3 & 3/3 & $0.940$ & $+0.13$ & $0.116$ & $0.947$ & $+0.18$ & $0.111$ \\
+\midrule
+8 & 8 & 3/3 & 3/3 & $0.450$ & $+0.29$ & $0.045$ & $1.000$ & $+1.02$ & $0.000$ \\
+8 & 12 & 3/3 & 3/3 & $0.433$ & $-0.02$ & $0.040$ & $0.856$ & $+0.77$ & $0.074$ \\
+8 & 16 & 3/3 & 3/3 & $0.960$ & $+0.57$ & $0.160$ & $0.809$ & $+0.65$ & $0.060$ \\
+8 & 20 & 3/3 & 3/3 & $0.953$ & $+0.53$ & $0.168$ & $0.893$ & $+0.71$ & $0.063$ \\
+8 & 24 & 3/3 & 3/3 & $0.954$ & $+0.51$ & $0.156$ & $0.876$ & $+0.66$ & $0.064$ \\
+8 & 32 & 3/3 & 3/3 & $0.941$ & $+0.48$ & $0.155$ & $0.887$ & $+0.58$ & $0.032$ \\
+8 & 64 & 3/3 & 3/3 & $0.968$ & $+0.34$ & $0.147$ & $0.941$ & $+0.52$ & $0.089$ \\
+8 & 128 & 3/3 & 3/3 & $0.963$ & $+0.26$ & $0.243$ & $0.944$ & $+0.47$ & $0.200$ \\
+\bottomrule
+\end{tabular}
+\end{table}

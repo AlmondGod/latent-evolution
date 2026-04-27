@@ -1,7 +1,9 @@
 import numpy as np
 import copy
-from pettingzoo.mpe import simple_tag_v2
-from pettingzoo.mpe import simple_spread_v2
+import warnings
+warnings.filterwarnings("ignore", message=".*pettingzoo.mpe.*moved to.*mpe2.*")
+from pettingzoo.mpe import simple_tag_v3 as simple_tag_v2
+from pettingzoo.mpe import simple_spread_v3 as simple_spread_v2
 
 class MPEWrapper:
     """Wraps PettingZoo MPE scenarios to match StarCraftCapabilityEnvWrapper API.

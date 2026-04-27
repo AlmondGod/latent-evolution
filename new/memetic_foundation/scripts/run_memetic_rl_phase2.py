@@ -20,6 +20,7 @@ from new.memetic_foundation.scripts.run_memetic_selection_phase2 import (
     create_phase2_env,
     evaluate_candidate,
 )
+from new.memetic_foundation.training.env_reset_utils import reset_env
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,7 +71,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--common-random-numbers", action="store_true")
     parser.add_argument("--persistent-z", action="store_true")
     parser.add_argument("--persistent-memory", action="store_true")
+    parser.add_argument("--wallclock-seconds", type=float, default=None,
+                        help="If set, exit the training loop when this wall-clock budget elapses.")
+    parser.add_argument("--warm-init-std", type=float, default=0.0,
+                        help="If >0, perturb LowRankDelta.up.weight (zero-init by default) "
+                             "and state-cell biases with N(0, std). Breaks the dead-feature "
+                             "trap that keeps the meme state cell at z=0 under MAPPO.")
     return parser.parse_args()
+
+
+def warm_init_adapter(adapter: MemeticCommAdapter, std: float) -> None:
+    # Symmetry-breaking init for params that are zero-init by design
+    # (LowRankDelta.up.weight, MemeticStateCell biases). Without this, MAPPO has
+    # no gradient signal into the state cell and z stays identically 0 forever.
+    if std <= 0.0:
+        return
+    with torch.no_grad():
+        for delta in (adapter.q_delta, adapter.k_delta, adapter.v_delta, adapter.o_delta):
+            delta.up.weight.normal_(mean=0.0, std=std)
+        if adapter.state_cell is not None:
+            adapter.state_cell.candidate.up.weight.normal_(mean=0.0, std=std)
+            adapter.state_cell.update_gate.up.weight.normal_(mean=0.0, std=std)
+            adapter.state_cell.candidate_bias.normal_(mean=0.0, std=std)
+            adapter.state_cell.update_gate_bias.normal_(mean=0.0, std=std)
 
 
 def tensorize_obs(obs_list, device: torch.device) -> torch.Tensor:
@@ -138,6 +161,7 @@ def main() -> None:
         use_z=not args.disable_z,
         dense_state_update=args.dense_state_update,
     ).to(device)
+    warm_init_adapter(adapter, args.warm_init_std)
     optimizer = torch.optim.Adam(adapter.parameters(), lr=args.lr)
 
     rng = np.random.RandomState(args.seed)
@@ -171,12 +195,15 @@ def main() -> None:
     next_eval_at = args.eval_interval_transitions
     update_idx = 0
 
-    env.reset(seed=int(rng.randint(0, 2**31 - 1)))
+    reset_env(env, seed=int(rng.randint(0, 2**31 - 1)))
     backbone.reset_memory()
     z_state = None
     episode_reward = 0.0
 
     while transitions < args.train_transitions:
+        if args.wallclock_seconds is not None and (time.time() - t0) >= args.wallclock_seconds:
+            print(json.dumps({"event": "wallclock_budget_exhausted", "elapsed": time.time() - t0, "transitions": transitions}), flush=True)
+            break
         backbone.detach_memory()
         if z_state is not None:
             z_state = z_state.detach()
@@ -231,7 +258,7 @@ def main() -> None:
 
             if done:
                 episode_reward = 0.0
-                env.reset(seed=int(rng.randint(0, 2**31 - 1)))
+                reset_env(env, seed=int(rng.randint(0, 2**31 - 1)))
                 if not args.persistent_memory:
                     backbone.reset_memory()
                 if not args.persistent_z:
@@ -401,6 +428,7 @@ def main() -> None:
                 "gamma": args.gamma,
                 "gae_lambda": args.gae_lambda,
                 "ent_coef": args.ent_coef,
+                "warm_init_std": args.warm_init_std,
             },
         },
         args.save_dir / "best_adapter.pt",

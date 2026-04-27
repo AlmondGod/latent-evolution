@@ -15,6 +15,7 @@ from new.memetic_foundation.models.frozen_attention_hu_actor import (
 )
 from new.memetic_foundation.modules.memetic_adapter import MemeticCommAdapter
 from new.memetic_foundation.training.env_utils import make_env
+from new.memetic_foundation.training.env_reset_utils import reset_env
 from new.memetic_foundation.training.mpe_wrapper import MPEWrapper
 from new.memetic_foundation.training.openai_es import OpenAIES
 from new.memetic_foundation.training.vmas_wrapper import VMASWrapper
@@ -76,6 +77,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--persistent-z", action="store_true")
     parser.add_argument("--persistent-memory", action="store_true")
     parser.add_argument("--stochastic-actions", action="store_true")
+    parser.add_argument("--wallclock-seconds", type=float, default=None,
+                        help="If set, exit the generation loop when this wall-clock budget elapses.")
     return parser.parse_args()
 
 
@@ -191,7 +194,7 @@ def evaluate_candidate(
         seed = None
         if episode_seeds is not None:
             seed = int(episode_seeds[ep_idx])
-        env.reset(seed=seed)
+        reset_env(env, seed=seed)
         if not persistent_memory:
             backbone.reset_memory()
         if adapter is not None and (not persistent_z or z_state is None):
@@ -416,6 +419,9 @@ def main() -> None:
     elite_archive: list[dict] = []
 
     for generation in range(args.generations):
+        if args.wallclock_seconds is not None and (time.time() - t0) >= args.wallclock_seconds:
+            print(json.dumps({"event": "wallclock_budget_exhausted", "elapsed": time.time() - t0, "generation": generation}), flush=True)
+            break
         candidates, noises = es.ask(args.population_size)
         fitnesses = []
         generation_rows = []

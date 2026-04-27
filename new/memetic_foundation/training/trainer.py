@@ -30,6 +30,7 @@ from tqdm import tqdm
 from ..models.agent_network import MemeticFoundationAC
 from .rollout_buffer import RolloutBuffer
 from .env_utils import make_env
+from .smacv2_vec_env import SMACv2VecEnv
 
 
 class MemeticFoundationTrainer:
@@ -37,7 +38,8 @@ class MemeticFoundationTrainer:
 
     def __init__(
         self,
-        env,
+        env=None,
+        vec_env: Optional[SMACv2VecEnv] = None,
         device: str = "cpu",
         lr: float = 5e-4,
         gamma: float = 0.99,
@@ -61,9 +63,17 @@ class MemeticFoundationTrainer:
         persistent_memory: bool = False,
     ):
         self.env = env
+        self.vec_env = vec_env
         self.device = torch.device(device)
 
-        env_info = env.get_env_info()
+        # Vec path is baseline-only for now: per-env memory/comm pooling not implemented.
+        if vec_env is not None and (use_memory or use_comm):
+            raise ValueError(
+                "vec_env currently supports baseline only. "
+                "Set --no-memory --no-comm or run with --num-envs 1."
+            )
+
+        env_info = (vec_env if vec_env is not None else env).get_env_info()
         self.n_agents = env_info["n_agents"]
         self.n_actions = env_info["n_actions"]
         self.obs_shape = env_info["obs_shape"]
@@ -101,6 +111,11 @@ class MemeticFoundationTrainer:
         # Track whether env has been reset at least once
         self._started = False
         self._episode_reward = 0.0
+        # Per-env episode reward accumulator for vec path
+        self._vec_ep_rewards: Optional[np.ndarray] = (
+            np.zeros(vec_env.n_envs, dtype=np.float32) if vec_env is not None else None
+        )
+        self._vec_started = False
 
         # Print variant info
         variant = self.policy.get_variant_name()
@@ -113,11 +128,14 @@ class MemeticFoundationTrainer:
     def collect_rollout(self, rollout_steps: int) -> Tuple[RolloutBuffer, np.ndarray, dict]:
         """Collect a rollout of transitions.
 
-        Memory state persists across episodes within the rollout.
+        Dispatches to the vec env path when vec_env was provided.
+        Memory state persists across episodes within the rollout (single-env path only).
         Memory is detached at the start of each rollout to truncate gradients.
 
         Returns: (buffer, last_values, stats)
         """
+        if self.vec_env is not None:
+            return self._collect_rollout_vec(rollout_steps)
         buffer = RolloutBuffer()
         episode_rewards = []
         episode_successes = []
@@ -222,6 +240,92 @@ class MemeticFoundationTrainer:
             # Per-agent hidden state norms
             stats["mem_agent_norms"] = mem_state.norm(dim=-1).mean().item()
 
+        return buffer, last_values, stats
+
+    def _collect_rollout_vec(self, rollout_steps: int) -> Tuple[RolloutBuffer, np.ndarray, dict]:
+        # Vectorized rollout collection. rollout_steps counts steps PER ENV;
+        # total transitions per call = rollout_steps * n_envs * n_agents.
+        # Baseline-only: no recurrent state, no comm.
+        assert self.vec_env is not None
+        vec = self.vec_env
+        E = vec.n_envs
+        N = self.n_agents
+
+        if not self._vec_started:
+            vec.reset_all()
+            self._vec_started = True
+
+        buffer = RolloutBuffer()
+        episode_rewards: list[float] = []
+        win_count = 0
+        episode_count = 0
+
+        # Pull current obs from each env (post-reset on first call, otherwise carried over)
+        obs_b, state_b, avail_b = vec.get_obs_state_avail()
+        # obs_b: (E, N, obs_dim), state_b: (E, state_dim), avail_b: (E, N, n_actions)
+
+        self.policy.eval()
+
+        for _ in range(rollout_steps):
+            # Flatten over envs for policy forward
+            obs_flat = obs_b.reshape(E * N, -1)
+            avail_flat = avail_b.reshape(E * N, -1)
+            state_per_agent = np.repeat(state_b, N, axis=0)  # (E*N, state_dim)
+
+            with torch.no_grad():
+                obs_t = torch.tensor(obs_flat, dtype=torch.float32, device=self.device)
+                avail_t = torch.tensor(avail_flat, dtype=torch.float32, device=self.device)
+                state_t = torch.tensor(state_per_agent, dtype=torch.float32, device=self.device)
+
+                step_out = self.policy.forward_step(obs_t, avail_t)
+                values_t = self.policy.get_value(state_t)
+
+            actions_flat = step_out["actions"].cpu().numpy()         # (E*N,)
+            log_probs_flat = step_out["log_probs"].cpu().numpy()     # (E*N,)
+            values_flat = values_t.cpu().numpy()                     # (E*N,)
+            actions_per_env = actions_flat.reshape(E, N)             # (E, N)
+
+            next_obs_b, next_state_b, next_avail_b, rewards_e, dones_e, infos_b, _raw = vec.step(actions_per_env)
+            # Broadcast per-env scalars across the agents within each env
+            rewards_flat = np.repeat(rewards_e, N).astype(np.float32)         # (E*N,)
+            dones_flat = np.repeat(dones_e, N).astype(np.float32)             # (E*N,)
+
+            buffer.add(
+                obs_flat,
+                state_per_agent,
+                actions_flat,
+                log_probs_flat,
+                rewards_flat,
+                dones_flat,
+                avail_flat,
+                values_flat,
+                hidden_state=None,
+            )
+
+            # Per-env episode bookkeeping
+            self._vec_ep_rewards += rewards_e
+            for i in range(E):
+                if dones_e[i] >= 0.5:
+                    episode_rewards.append(float(self._vec_ep_rewards[i]))
+                    self._vec_ep_rewards[i] = 0.0
+                    if isinstance(infos_b[i], dict) and infos_b[i].get("battle_won", False):
+                        win_count += 1
+                    episode_count += 1
+
+            obs_b, state_b, avail_b = next_obs_b, next_state_b, next_avail_b
+
+        # Bootstrap value on the final post-step obs (state repeated per agent)
+        with torch.no_grad():
+            state_per_agent = np.repeat(state_b, N, axis=0)
+            state_t = torch.tensor(state_per_agent, dtype=torch.float32, device=self.device)
+            last_values = self.policy.get_value(state_t).cpu().numpy()  # (E*N,)
+
+        stats = {
+            "episode_rewards": episode_rewards,
+            "mean_reward": float(np.mean(episode_rewards)) if episode_rewards else 0.0,
+            "win_rate": win_count / max(episode_count, 1),
+            "episodes": episode_count,
+        }
         return buffer, last_values, stats
 
     def evaluate(self, test_episodes: int = 5, deterministic: bool = True) -> dict:

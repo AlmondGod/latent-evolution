@@ -38,8 +38,10 @@ import torch
 from tqdm import tqdm
 
 from .training.env_utils import make_env
+from .training.hanabi_wrapper import HanabiWrapper
 from .training.mpe_wrapper import MPEWrapper
 from .training.rware_wrapper import RWAREWrapper
+from .training.smacv2_vec_env import SMACv2VecEnv
 from .training.trainer import MemeticFoundationTrainer, plot_training_curves
 from .training.vmas_wrapper import VMASWrapper
 from torch.utils.tensorboard import SummaryWriter
@@ -55,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["train", "eval", "test"], default="train")
 
     # Environment
-    parser.add_argument("--env", choices=["smacv2", "mpe", "rware", "vmas"], default="smacv2")
+    parser.add_argument("--env", choices=["smacv2", "mpe", "rware", "vmas", "hanabi"], default="smacv2")
     parser.add_argument("--mpe-scenario", type=str, default="simple_tag_v2",
                         help="MPE scenario to load if --env is mpe")
     parser.add_argument("--vmas-scenario", choices=["transport", "discovery"], default="transport",
@@ -76,6 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vmas-agents-per-target", type=int, default=1)
     parser.add_argument("--vmas-targets-respawn", action="store_true",
                         help="Respawn targets in VMAS discovery. Leave off for fixed workload.")
+    parser.add_argument("--hanabi-players", type=int, default=2,
+                        help="Number of Hanabi players (2-5).")
+    parser.add_argument("--hanabi-game-type", type=str, default="Hanabi-Full",
+                        choices=["Hanabi-Full", "Hanabi-Small", "Hanabi-Very-Small"],
+                        help="Hanabi game variant.")
 
     # Architecture
     parser.add_argument("--hidden-dim", type=int, default=128)
@@ -131,6 +138,9 @@ def build_parser() -> argparse.ArgumentParser:
     # Training hyperparameters
     parser.add_argument("--total-steps", type=int, default=2_000_000)
     parser.add_argument("--rollout-steps", type=int, default=400)
+    parser.add_argument("--num-envs", type=int, default=1,
+                        help="Vectorized SMACv2 envs per training run (1 = single env). "
+                             "Currently baseline only (no memory/comm).")
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
@@ -223,6 +233,12 @@ def create_env(args, render=False):
             targets_respawn=args.vmas_targets_respawn,
             shared_reward=True,
         )
+    elif args.env == "hanabi":
+        return HanabiWrapper(
+            num_players=args.hanabi_players,
+            game_type=args.hanabi_game_type,
+            max_steps=args.rollout_steps if hasattr(args, "rollout_steps") else 80,
+        )
     else:
         return make_env(args.race, args.n_units, args.n_enemies, render=render)
 
@@ -262,6 +278,10 @@ def run_test(args):
             extra.append(f"targets_covered={info['targets_covered']:.1f}")
         if "deliveries_proxy" in info:
             extra.append(f"deliveries_proxy={info['deliveries_proxy']:.2f}")
+        if "score" in info:
+            extra.append(f"score={info['score']}/{info.get('max_score', '?')}")
+        if "life_tokens" in info:
+            extra.append(f"lives={info['life_tokens']}")
         suffix = (", " + ", ".join(extra)) if extra else ""
         print(f"  Episode {ep+1}: reward={ep_reward:.2f}, steps={step}{suffix}")
 
@@ -279,6 +299,8 @@ def run_train(args):
         scenario = f"{args.mpe_scenario} n={args.n_adversaries}"
     elif args.env == "rware":
         scenario = f"rware {args.rware_rows}x{args.rware_cols} req={args.rware_requests} n={args.n_units}"
+    elif args.env == "hanabi":
+        scenario = f"{args.hanabi_game_type} {args.hanabi_players}p"
     else:
         scenario = f"vmas {args.vmas_scenario} n={args.n_units}"
     print(f"  Scenario: {scenario}")
@@ -291,9 +313,23 @@ def run_train(args):
         device = "cpu"
     print(f"  Device: {device}")
 
-    env = create_env(args, render=False)
+    use_vec = args.env == "smacv2" and args.num_envs > 1
+    if use_vec:
+        vec_env = SMACv2VecEnv(
+            n_envs=args.num_envs,
+            race=args.race,
+            n_units=args.n_units,
+            n_enemies=args.n_enemies,
+        )
+        env = None
+        print(f"  Vec envs:   {args.num_envs} (parallel SC2 instances)")
+    else:
+        env = create_env(args, render=False)
+        vec_env = None
+
     trainer = MemeticFoundationTrainer(
         env=env,
+        vec_env=vec_env,
         device=device,
         lr=args.lr,
         gamma=args.gamma,
@@ -326,7 +362,8 @@ def run_train(args):
     t_start = time.time()
     writer = SummaryWriter(args.save_dir)
 
-    n_iters = args.total_steps // args.rollout_steps
+    steps_per_rollout = args.rollout_steps * (args.num_envs if use_vec else 1)
+    n_iters = max(1, args.total_steps // steps_per_rollout)
     pbar = tqdm(total=args.total_steps, desc=f"MF-{variant}")
 
     for iteration in range(n_iters):
@@ -356,8 +393,9 @@ def run_train(args):
         update_stats = trainer.update(buffer, last_values)
         buffer.clear()
 
-        total_steps += args.rollout_steps
-        pbar.update(args.rollout_steps)
+        # Each rollout step yields one transition per env, so vec multiplies env-step throughput.
+        total_steps += steps_per_rollout
+        pbar.update(steps_per_rollout)
 
         if stats["episodes"] > 0:
             log_steps.append(total_steps)
@@ -422,7 +460,8 @@ def run_train(args):
             )
 
         # Run Deterministic Evaluation periodically (every 5 log_intervals)
-        if (iteration + 1) % (args.log_interval * 5) == 0:
+        # Skip in vec mode: trainer.evaluate uses single self.env which is None.
+        if (iteration + 1) % (args.log_interval * 5) == 0 and not use_vec:
             eval_stats = trainer.evaluate(test_episodes=5, deterministic=True)
             writer.add_scalar("Eval/mean_reward", eval_stats["mean_reward"], total_steps)
             if "success_rate" in eval_stats:
@@ -452,7 +491,12 @@ def run_train(args):
         )
 
     # Save results JSON
-    scenario_str = args.mpe_scenario if args.env == "mpe" else f"{args.n_units}v{args.n_enemies}"
+    if args.env == "mpe":
+        scenario_str = args.mpe_scenario
+    elif args.env == "hanabi":
+        scenario_str = f"{args.hanabi_game_type}_{args.hanabi_players}p"
+    else:
+        scenario_str = f"{args.n_units}v{args.n_enemies}"
     results = {
         "algorithm": f"memetic_foundation_{variant}",
         "environment": args.env,
@@ -481,7 +525,10 @@ def run_train(args):
         json.dump(results, f, indent=2)
     print(f"Results saved: {results_path}")
 
-    env.close()
+    if vec_env is not None:
+        vec_env.close()
+    if env is not None:
+        env.close()
     print(f"\nTraining complete! {total_steps} steps in {elapsed:.1f}s")
 
 

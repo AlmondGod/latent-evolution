@@ -40,6 +40,7 @@ class MemeticFoundationTrainerPhase1(MemeticFoundationTrainer):
         persistent_memory: bool = False,
     ):
         self.env = env
+        self.vec_env = None
         self.device = torch.device(device)
 
         env_info = env.get_env_info()
