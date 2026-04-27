@@ -9,18 +9,7 @@ Research code for memetic (culture-like) adaptation in multi-agent communication
 
 ## Overview
 
-Multi-agent RL usually improves coordination through per-agent weight updates. This project studies **selection over latent communication strategies**—*memetic evolution*—in addition to (or instead of) pure gradient steps.
-
-- **Formalism:** Communicated latents are treated as transmissible strategies whose frequencies evolve under a learned **transmission** mechanism. **RALE** measures how well patterns that *spread* are also the ones that **improve joint return** (alignment between replicative and host “fitness”).
-- **ALEC** instantiates the idea with a **frozen** MAPPO backbone, an evolvable **communication adapter** (low-rank Q/K/V/O deltas + **memetic state** for decentralized latent memory), and an outer loop (**OpenAI-ES** or **MAPPO** on the adapter) depending on the experiment.
-- **Environments (among others):** MPE2 Predator-Prey, VMAS Discovery/Transport, **StarCraft II (SMACv2)**. Experiments compare ALEC to MAPPO under matched budgets; **RALE** analyses probe alignment between $F$ and $R$ on logged latents (see `results/phase2_rale_alignment/` for paper-ready LaTeX snippets).
-
-*Abstract (shortened):* We formalize communicated latents as transmissible strategies, define the RALE objective, build ALEC with ES/RL over the attention graph and GRU-based latent memory, and show competitiveness with MAPPO. RALE measurements indicate that higher-reward latents can become more probable under both ES- and RL-trained ALEC.
-
-**Code (related capstone repository):** [github.com/AlmondGod/memeplex-capstone](https://github.com/AlmondGod/memeplex-capstone)  
-**This repository:** [github.com/AlmondGod/latent-evolution](https://github.com/AlmondGod/latent-evolution)
-
----
+Multi-agent RL usually improves coordination through per-agent weight updates. We study selection over latent communication strategies.
 
 ## Installation
 
@@ -69,24 +58,12 @@ If you use this code or the RALE/ALEC formalism, please cite the thesis (replace
   year    = {2026},
   address = {Philadelphia, PA},
   type    = {Undergraduate / Masters Thesis},
-  note    = {Advised by Victor Preciado. Code: https://github.com/AlmondGod/memeplex-capstone},
+  note    = {Advised by Victor Preciado. Code: https://github.com/AlmondGod/latent-evolution},
 }
 ```
-
-**Plain text (abstract snippet for reference lists):**  
-*Multi-Agent Reinforcement Learning (MARL) typically improves coordination through individual weight updates. Taking inspiration from cultural evolution in human populations, we investigate a different axis of adaptation: communicating multi-agent systems changing through selection over latent communication strategies, known abstractly as “memetic evolution.” We formalize communicated latents as transmissible strategies whose frequencies evolve under a learned transmission operator, and we define the central objective of Reward-Aligned Latent Evolution (RALE): a measure of how much the communication patterns that spread are also those that improve joint return. We instantiate this framework in Attention-guided Latent Evolution in Communication (ALEC), which applies an optimizer (ES or MARL) over the attention-based communication graph and introduces decentralized latent memory via GRUs. The proposed method is competitive with MAPPO in MPE2 Predator-Prey, VMAS Discovery/Transport, and StarCraft MultiAgent Challenge v2. We measure alignment between latent replication success and downstream reward in ALEC using RALE and see that, with both ES- and RL-based ALEC, higher-reward latents become more probable.*
-
----
 
 ## Quick pointers
 
 - **Phase-2 ALEC (ES):** `new/memetic_foundation/scripts/run_memetic_selection_phase2.py`
 - **Phase-2 MAPPO adapter:** `new/memetic_foundation/scripts/run_memetic_rl_phase2.py`
 - **RALE probe + analysis:** `phase2_rale_probe.py`, `analyze_rale_alignment.py`
-- **Paper (LaTeX) snippets:** `results/phase2_rale_alignment/paper_section_rale_streamlined.tex`, `tab_alec_formal_mapping.tex`
-
----
-
-## Legacy: LA-IPPO (Method I)
-
-The original README in git history described **Latent-Aligned IPPO** (representation distillation between agents) and MPE `simple_spread` experiments. That line of work lives in older scripts at the repo root (`train_method_i.py`, etc.) and in `old/`. The **current** research emphasis for this thesis is **memetic foundation + ALEC + RALE** under `new/memetic_foundation/`.
